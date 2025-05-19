@@ -1,5 +1,5 @@
 ---
 # from github.com
-- src: https://github.com/lablabs/ansible-role-rke2
+- src: https://github.com/Octostarco/ansible-role-rke2
   scm: git
   name: rke2
