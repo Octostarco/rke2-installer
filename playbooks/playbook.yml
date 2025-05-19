@@ -1,0 +1,265 @@
+- name: Deploy RKE2
+  hosts: all
+  remote_user: root
+  vars:
+    #rke2_version:
+    # lb ip
+    #rke2_api_ip:
+
+    has_gpu_nodes: "{{ groups['all'] | select('search', 'gpu') | list | length > 0 }}"
+
+    rke2_custom_manifests: >-
+      {{
+        [ playbook_dir + '/../manifests/rke2-cilium-config.yaml' ]
+        + ( [ playbook_dir + '/../manifests/rke2-nvidia.yaml' ] if has_gpu_nodes else [] )
+      }}
+
+    rke2_server_node_taints:
+      - 'CriticalAddonsOnly=true:NoExecute'
+
+    rke2_download_kubeconf: true
+    rke2_download_kubeconf_path: "{{ playbook_dir }}/../kubeconfs"
+
+    rke2_ha_mode: true
+
+    # We do not use kubeproxy, but cilium replacement
+    disable_kube_proxy: true
+
+    rke2_ha_mode_keepalived: false
+
+    rke2_disable:
+      - rke2-canal
+      - rke2-ingress-nginx
+
+    rke2_cni:
+      - cilium
+
+  pre_tasks:
+
+    - name: Check if ubuntu
+      ansible.builtin.fail:
+        msg: No ubuntu but {{ ansible_distribution }}
+      when: ansible_distribution != 'Ubuntu'
+
+    - name: Check if ubuntu 24
+      ansible.builtin.fail:
+        msg: No ubuntu 24 but {{ ansible_distribution_major_version }}
+      when: ansible_distribution_major_version != '24'
+
+    - name: Gather information about lvm
+      stat:
+        path: /dev/vg0/root
+      register: vg0_root
+
+    - name: Check for /dev/vg0/root
+      ansible.builtin.fail:
+        msg: No /dev/vg0/root found. LVM configuration seems not ok.
+      when: rke2_type == 'agent' and (not vg0_root.stat.exists) and 'workers' in group_names and (use_lvm | bool)
+
+    - name: Check if the NetworkManager directory exists
+      ansible.builtin.stat:
+        path: "/usr/sbin/NetworkManager"
+      register: nwm_dir
+
+    - name: NetworkManager found
+      ansible.builtin.fail:
+        msg: Network Manager present
+      when: nwm_dir.stat.exists
+
+    - name: Disable SWAP
+      shell: |
+        swapoff -a
+
+    - name: Disable SWAP in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+
+    - name: Set a hostname {{ inventory_hostname }}
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Update Timezone to Etc/UTC
+      copy: content="Etc/UTC\n" dest=/etc/timezone owner=root group=root mode=0644
+      register: timezone
+
+    - name: Reconfigure Timezone Data (if changed)
+      shell: dpkg-reconfigure -f noninteractive tzdata
+      when: timezone.changed
+
+    #- name: sync hwclock
+    #  shell: "hwclock --localtime --systohc"
+
+    #sysctl -w fs.inotify.max_user_instances=100000
+    - name: "Set fs.inotify.max_user_instances"
+      sysctl:
+        name: fs.inotify.max_user_instances
+        value: '100000'
+        sysctl_set: yes
+        state: present
+        reload: yes
+
+    #sysctl -w fs.inotify.max_user_watches=1003986
+    - name: "Set fs.inotify.max_user_watches"
+      sysctl:
+        name: fs.inotify.max_user_watches
+        value: '1003986'
+        sysctl_set: yes
+        state: present
+        reload: yes
+
+    #sysctl -w vm.max_map_count=262144
+    - name: "Set vm.max_map_count"
+      sysctl:
+        name: vm.max_map_count
+        value: '262144'
+        sysctl_set: yes
+        state: present
+        reload: yes
+
+    - name: Add or modify hard nofile limits for wildcard domain
+      community.general.pam_limits:
+        domain: '*'
+        limit_type: hard
+        limit_item: nofile
+        value: 1000000
+
+    - name: Add or modify soft nofile limits for wildcard domain
+      community.general.pam_limits:
+        domain: '*'
+        limit_type: soft
+        limit_item: nofile
+        value: 1000000
+
+    - name: Update apt repo and cache on all boxes
+      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+
+    - name: Upgrade all packages on servers
+      apt: upgrade=dist force_apt_get=yes
+
+    - name: Install additional software
+      # linux-headers is a Linstore requirement
+      apt:
+        update_cache: true
+        pkg:
+        - linux-headers-generic
+        - linux-headers-{{ ansible_kernel }}
+        - curl
+        - git
+        - wget
+        - vim
+        - nano
+        - htop
+        - netcat-openbsd
+        - net-tools
+        - dnsutils
+        - jq
+        - lvm2
+
+    - name: Install k9s on control plane nodes
+      shell: |
+        curl -L -O https://github.com/derailed/k9s/releases/latest/download/k9s_linux_amd64.deb && sudo dpkg -i k9s_linux_amd64.deb && rm k9s_linux_amd64.deb
+      when: rke2_type == 'server'
+
+    - name: Get lvm information
+      shell: |
+        ls -la /opt
+        cat /etc/fstab
+        lsblk -f
+        vgdisplay || true
+        lvdisplay || true
+      register: result
+      when: rke2_type == 'agent' and 'workers' in group_names and (use_lvm | bool)
+
+    - name: Print lvm information
+      ansible.builtin.debug:
+        var: result
+      when: rke2_type == 'agent' and 'workers' in group_names and (use_lvm | bool)
+
+    - name: Check for /opt/local-path-provisioner
+      stat:
+        path: /opt/local-path-provisioner
+      register: local_path_provisioner
+
+    - name: Create logical volumes for local path provisioner on server nodes
+      shell: |
+        lvcreate -n k8s-local-path -L1500G vg0
+        mkfs.ext4 /dev/vg0/k8s-local-path
+        mkdir /opt/local-path-provisioner
+        echo "/dev/vg0/k8s-local-path /opt/local-path-provisioner ext4 defaults,noatime 0 0" >> /etc/fstab
+        mount -a
+      register: result
+      when: rke2_type == 'agent' and (not local_path_provisioner.stat.exists) and 'workers' in group_names and (use_lvm | bool)
+
+    - name: Print lvm create information
+      ansible.builtin.debug:
+        var: result
+      when: rke2_type == 'agent' and 'workers' in group_names and (use_lvm | bool)
+
+    - name: Check if a reboot is needed on all servers
+      register: reboot_required_file
+      stat: path=/var/run/reboot-required
+
+    - name: Check if the rke2/config.yaml exists
+      stat:
+        path: /etc/rancher/rke2/config.yaml
+      register: rkeconfig_result
+
+    - name: Reboot the box on first install
+      reboot:
+        msg: "Reboot initiated by Ansible for first install"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: uptime
+      #when: reboot_required_file.stat.exists and (not rkeconfig_result.stat.exists)
+      when: not rkeconfig_result.stat.exists
+
+    - name: Check SWAP disabled
+      shell: |
+        LINES=$(cat /proc/swaps | wc -l)
+        if [ "$LINES" != "1" ]; then
+          # 1 means only the headers and no swap
+          echo "LINES is $LINES"
+          exit 1
+        fi
+
+    - name: Create a networkd.conf.d for drop-ins
+      # See https://docs.cilium.io/en/stable/operations/system_requirements/#systemd-based-distributions
+      # Required for Ubuntu 22.04
+      ansible.builtin.file:
+        path: /etc/systemd/networkd.conf.d/
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Configure systemd Network RoutingPolicyRules
+      ansible.builtin.copy:
+        dest: /etc/systemd/networkd.conf.d/rke2-network.conf
+        content: |
+          [Network]
+          ManageForeignRoutes=no
+          ManageForeignRoutingPolicyRules=no
+        owner: root
+        group: root
+        mode: '0644'
+      register: systemdnetwork
+    - name: Reload systemd networkd
+      ansible.builtin.systemd:
+        state: restarted
+        daemon_reload: true
+        name: systemd-networkd
+      when: systemdnetwork.changed
+
+    - name: Add k8s Binaries to PATH
+      ansible.builtin.lineinfile:
+        path: /root/.bashrc
+        line: "{{ item }}"
+      loop:
+        - "export KUBECONFIG=/etc/rancher/rke2/rke2.yaml"
+        - "PATH=$PATH:/var/lib/rancher/rke2/bin"
+
+  roles:
+    - role: rke2
