@@ -4,7 +4,11 @@ Octostar RKE2 K8s cluster installer with Ansible, based on the [RKE2 Ansible Rol
 
 ## Requirements
 
-The only supported OS on cluster nodes is Ubuntu 24.04. Make sure to also follow the [RKE2 Requirements](https://docs.rke2.io/install/requirements) before you start.
+* The only supported OS on cluster nodes is Ubuntu 24.04.
+
+* Make sure to also follow the [RKE2 Requirements](https://docs.rke2.io/install/requirements) before you start.
+
+* The RKE2 control plane nodes need ports 6443 and 9345 to be accessible by other nodes in the cluster.
 
 ### 1. Add SSH Private Key
 
@@ -46,4 +50,3 @@ The only supported OS on cluster nodes is Ubuntu 24.04. Make sure to also follow
     ./deploy.sh test.ini
     ```
 
-    > Note: The RKE2 control plane nodes need ports 6443 and 9345 to be accessible by other nodes in the cluster.
