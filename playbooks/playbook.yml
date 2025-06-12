@@ -138,13 +138,16 @@
     - name: Upgrade all packages on servers
       apt: upgrade=dist force_apt_get=yes
 
+    - name: Get kernel version
+      shell: uname -r
+      register: kernel_version
+
     - name: Install additional software
-      # linux-headers is a Linstore requirement
       apt:
         update_cache: true
         pkg:
         - linux-headers-generic
-        - linux-headers-{{ ansible_kernel }}
+        - linux-headers-{{ kernel_version.stdout }}
         - curl
         - git
         - wget
@@ -157,9 +160,13 @@
         - jq
         - lvm2
 
+    - name: Get DEB architecture
+      shell: dpkg --print-architecture
+      register: deb_architecture
+
     - name: Install k9s on control plane nodes
       shell: |
-        curl -L -O https://github.com/derailed/k9s/releases/latest/download/k9s_linux_amd64.deb && sudo dpkg -i k9s_linux_amd64.deb && rm k9s_linux_amd64.deb
+        curl -L -O https://github.com/derailed/k9s/releases/latest/download/k9s_linux_{{ deb_architecture.stdout }}.deb && sudo dpkg -i k9s_linux_{{ deb_architecture.stdout }}.deb && rm k9s_linux_{{ deb_architecture.stdout }}.deb
       when: rke2_type == 'server'
 
     - name: Get lvm information
