@@ -1,6 +1,6 @@
 # Octostar Ansible RKE2
 
-Octostar RKE2 K8s cluster installer with Ansible.
+Octostar RKE2 K8s cluster installer with Ansible, based on the [RKE2 Ansible Role](https://github.com/lablabs/ansible-role-rke2) by Labyrinth Labs.
 
 ## Requirements
 
@@ -26,7 +26,7 @@ The only supported OS on cluster nodes is Ubuntu 24.04. Make sure to also follow
 
 1. Install Ansible (see [Ansible docs](https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html) for more information)
 
-2. Add Ansible roles:
+2. Add Ansible role:
 
     ```
     ansible-galaxy install -r requirements.yml
