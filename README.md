@@ -4,17 +4,19 @@ Octostar RKE2 K8s cluster installer with Ansible.
 
 ## Requirements
 
-Please make sure to follow the [RKE2 Requirements](https://docs.rke2.io/install/requirements) before you start.
+The only supported OS on cluster nodes is Ubuntu 24.04. Make sure to also follow the [RKE2 Requirements](https://docs.rke2.io/install/requirements) before you start.
 
 ### 1. Add SSH Private Key
 
-1. Have your SSH private key stored in `/path/to/key` and make sure it is readable only by the current user:
+1. Have an SSH key pair and have the public key added to the `authorized_keys` file on all the cluster nodes.
+
+2. Have your SSH private key stored somewhere on your machine (e.g. in `/path/to/key`) and make sure it is readable only by the current user:
 
     ```
     chmod 600 /path/to/key
     ```
 
-2. Edit `ansible.cfg` and set the path to your SSH private key:
+3. Edit `ansible.cfg` and set the path to your SSH private key:
 
     ```
     private_key_file = /path/to/key
