@@ -182,15 +182,21 @@
         path: /opt/local-path-provisioner
       register: local_path_provisioner
 
-    - name: Create logical volumes for local path provisioner on server nodes
+    - name: Create logical volume for local path provisioner on agent nodes
       shell: |
         lvcreate -n k8s-local-path -L1500G vg0
         mkfs.ext4 /dev/vg0/k8s-local-path
-        mkdir /opt/local-path-provisioner
+        mkdir -p /opt/local-path-provisioner
         echo "/dev/vg0/k8s-local-path /opt/local-path-provisioner ext4 defaults,noatime 0 0" >> /etc/fstab
         mount -a
       register: result
-      when: rke2_type == 'agent' and (not local_path_provisioner.stat.exists) and 'workers' in group_names and (use_lvm | bool)
+      when: rke2_type == 'agent' and (use_local_path_provisioner | bool) and (not local_path_provisioner.stat.exists) and 'workers' in group_names and (use_lvm | bool)
+
+    - name: Create simple folder for local path provisioner on agent nodes
+      shell: |
+        mkdir -p /opt/local-path-provisioner
+      register: result
+      when: rke2_type == 'agent' and (use_local_path_provisioner | bool) and (not local_path_provisioner.stat.exists) and 'workers' in group_names and (not use_lvm | bool)
 
     - name: Print lvm create information
       ansible.builtin.debug:
@@ -260,6 +266,17 @@
       loop:
         - "export KUBECONFIG=/etc/rancher/rke2/rke2.yaml"
         - "PATH=$PATH:/var/lib/rancher/rke2/bin"
+
+  post_tasks:
+    - name: Install local-path-provisioner
+      shell: |
+        {{ rke2_data_path }}/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
+      when: rke2_type == 'server' and (use_local_path_provisioner | bool)
+
+    - name: Set local-path-provisioner as default storage class
+      shell: |
+        {{ rke2_data_path }}/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+      when: rke2_type == 'server' and (use_local_path_provisioner | bool)
 
   roles:
     - role: rke2
