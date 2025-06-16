@@ -50,7 +50,7 @@ Octostar [RKE2](https://docs.rke2.io/) K8s cluster installer with Ansible, based
     ./deploy.sh test.ini
     ```
 
-3. If you have `kubectl` installed on your machine, you can use the kubeconfig file in `kubeconfs/test.yaml` to connect to the cluster.
+3. If you have `kubectl` installed on your machine, you can use the kubeconfig file in `kubeconfs/test.yaml` to connect to the cluster. Otherwise, you can use the `kubectl` command from any of the control plane nodes.
 
     ```
     kubectl --kubeconfig kubeconfs/test.yaml get nodes
