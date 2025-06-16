@@ -1,6 +1,6 @@
 # Octostar Ansible RKE2
 
-Octostar RKE2 K8s cluster installer with Ansible, based on the [RKE2 Ansible Role](https://github.com/lablabs/ansible-role-rke2) by Labyrinth Labs.
+Octostar [RKE2](https://docs.rke2.io/) K8s cluster installer with Ansible, based on the [RKE2 Ansible Role](https://github.com/lablabs/ansible-role-rke2) by Labyrinth Labs.
 
 ## Requirements
 
