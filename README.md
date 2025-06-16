@@ -38,7 +38,7 @@ Octostar [RKE2](https://docs.rke2.io/) K8s cluster installer with Ansible, based
 
 ## Usage
 
-1. Create a copy of the inventory `template.ini`, name it `<env>.ini` (e.g. `test.ini`), and edit the file filling in the correct values:
+1. Create a copy of the inventory `template.ini`, name it `<env>.ini` (e.g. `test.ini`), and edit the file filling in the correct values (make sure to go through every section):
 
     ```
     cp inventories/template.ini inventories/test.ini
