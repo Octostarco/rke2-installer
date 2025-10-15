@@ -1,0 +1,151 @@
+# TODO: setup lvm with disks and mount to /data. Create PVCs that mount /data
+
+# This should automate 90% of the work, maybe the rest might stay manual
+
+- name: Setup vLLM and dependencies
+  hosts: testing
+  gather_facts: true
+  # serial: 1
+  become: true
+  tasks:
+  # Gather some additional facts
+  - name: Get nvidia_keyring fact
+    ansible.builtin.stat:
+      path: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    register: nvidia_keyring
+  - name: Get nvidia repo list
+    ansible.builtin.stat:
+      path: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    register: nvidia_repo_list
+  - name: Populate service facts
+    ansible.builtin.service_facts:
+
+  - name: Install pip
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+        - python3-pip
+  - name: Install pip dependencies for k8s ansible module
+    ansible.builtin.pip:
+      break_system_packages: true
+      name:
+        - kubernetes
+        - pyyaml
+        - jsonpatch
+
+  - name: Create dummy loopback interface so k3s is not confused when switching ethernet cards
+    ansible.builtin.shell: nmcli connection add type dummy ifname dummy0 ipv4.addresses 172.31.255.1/32 ipv4.method manual autoconnect yes
+
+  - name: Optionally, at the same time specify IPv6 addresses for the device
+    community.general.nmcli:
+      conn_name: dummy0
+      ifname: dummy0
+      type: dummy
+      ip4: 172.31.255.1/32
+      method4: manual
+      state: present
+      autoconnect: true
+
+  - name: Install k3s
+    when: ansible_facts.services['k3s.service']['status'] | default('not-found') == 'not-found'
+    # TODO: disable traefik at startup
+    ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia --kubelet-arg='system-reserved=cpu=6,memory=26Gi' --kubelet-arg='kube-reserved=cpu=1,memory=2Gi' --advertise-address 172.31.255.1" sh -
+    # ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia" sh -
+
+  # TODO: add label '"nvidia.com/gpu.present: "true"' to node, so nvidia device plugin daemonset gets scheduled there
+
+  # - name: Check k3s
+  #   ansible.builtin.pause:
+  #     prompt: "Check k3s"
+
+  # # - name: Setup LVM with available disks (maybe use vars to tell the disks?)
+  # - name: Install ubuntu nvidia drivers (requires reboot)
+  #   cmd: ubuntu-drivers install --recommended
+
+  - name: Fetch nvidia repo gpg key
+    when: not nvidia_keyring.stat.exists
+    ansible.builtin.shell: curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+  - name: Add nvidia repo
+    when: not nvidia_repo_list.stat.exists
+    ansible.builtin.shell: >-
+      curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+  # https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#next-steps
+  - name: Install nvidia container runtime (toolkit)
+    vars:
+      nvidia_toolkit_version: 1.17.8-1
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+        - nvidia-container-toolkit={{nvidia_toolkit_version }}
+        - nvidia-container-toolkit-base={{nvidia_toolkit_version }}
+        - libnvidia-container-tools={{nvidia_toolkit_version }}
+        - libnvidia-container1={{nvidia_toolkit_version }}
+  
+  - name: Install k3s compatible drivers
+    vars:
+      nvidia_driver_version: 580
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+        - nvidia-container-runtime
+        - cuda-drivers-fabricmanager-{{ nvidia_driver_version }}
+        - nvidia-headless-{{ nvidia_driver_version }}-server-open
+        - nvidia-utils-{{ nvidia_driver_version }}
+
+  # - name: Check nvidia drivers
+  #   ansible.builtin.pause:
+  #     prompt: "Check nvidia drivers"
+
+  - name: Install helm
+    ansible.builtin.shell: >-
+      curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 \
+      && chmod 700 get_helm.sh \
+      && ./get_helm.sh
+
+  - name: Copy kubeconfig file so helm can see it (embedded kubectl looks at /etc/rancher/k3s/k3s.yaml)
+    ansible.builtin.copy:
+      remote_src: true
+      src: /etc/rancher/k3s/k3s.yaml
+      dest: /root/.kube/config
+
+  - name: Enable nvidia helm repository
+    kubernetes.core.helm_repository:
+      name: nvdp
+      repo_url: https://nvidia.github.io/k8s-device-plugin
+  
+  - name: Install k8s-device-plugin helmchart
+    ansible.builtin.shell: >-
+      helm upgrade -i nvdp nvdp/nvidia-device-plugin \
+        --namespace nvidia-device-plugin \
+        --create-namespace \
+        --version 0.17.1
+
+  - name: Create vllm namespace
+    kubernetes.core.k8s:
+      name: vllm
+      api_version: v1
+      kind: Namespace
+      state: present
+
+  - name: Copy deployments files
+    ansible.builtin.copy:
+      # remote_src: true
+      src: vllm/{{ item }}-deployment.yml
+      dest: /root/{{ item }}-deployment.yml
+    loop:
+      - qwen
+      - phi
+
+
+  - name: Create a Deployment by reading the definition from a local file
+    kubernetes.core.k8s:
+      state: present
+      src: /root/{{ item }}-deployment.yml
+    loop:
+      - qwen
+      - phi
+
+  # In case you mess things up with the operator, refer to this: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/uninstall.html
