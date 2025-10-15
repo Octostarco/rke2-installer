@@ -44,16 +44,15 @@ spec:
         # args: [
         #   "vllm serve Qwen/Qwen3-30B-A3B-FP8 --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser deepseek_r1 --tensor-parallel-size 2 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.5 --swap-space 16 --kv-cache-dtype auto --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 8 --served-model-name qwen3-30b"
         # ]
-        # args: [
-        #   "vllm serve Qwen/Qwen3-30B-A3B-FP8 --quantization fp8 --reasoning-parser deepseek_r1 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.50 --swap-space 16 --kv-cache-dtype auto --tensor-parallel-size 2 --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 4 --served-model-name qwen3-30b --enable-auto-tool-choice --tool-call-parser hermes"
-        # ]
         args: [
-          "vllm serve nvidia/Qwen3-30B-A3B-FP4 --quantization fp4 --reasoning-parser deepseek_r1 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.50 --swap-space 16 --kv-cache-dtype auto --tensor-parallel-size 2 --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 4 --served-model-name qwen3-30b --enable-auto-tool-choice --tool-call-parser hermes"
+          "vllm serve Qwen/Qwen3-30B-A3B-FP8 --quantization fp8 --reasoning-parser deepseek_r1 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.50 --swap-space 16 --kv-cache-dtype auto --tensor-parallel-size 2 --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 4 --served-model-name qwen3-30b --enable-auto-tool-choice --tool-call-parser hermes"
         ]
-        
+        # args: [
+        #   "vllm serve nvidia/Qwen3-30B-A3B-FP4 --quantization fp4 --reasoning-parser deepseek_r1 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.50 --swap-space 16 --kv-cache-dtype auto --tensor-parallel-size 2 --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 4 --served-model-name qwen3-30b --enable-auto-tool-choice --tool-call-parser hermes"
+        # ]
         env:
           - name: HF_HUB_OFFLINE
-            value: "1"
+            value: "0"
         # env:
         #- name: CUDA_VISIBLE_DEVICES                                                    
         #  value: "1"
