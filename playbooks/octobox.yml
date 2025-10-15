@@ -3,7 +3,7 @@
 # This should automate 90% of the work, maybe the rest might stay manual
 
 - name: Setup vLLM and dependencies
-  hosts: testing
+  hosts: octoboxes
   gather_facts: true
   # serial: 1
   become: true
