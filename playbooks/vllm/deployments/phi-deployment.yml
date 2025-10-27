@@ -49,9 +49,13 @@ spec:
         # args: [
         #   "vllm serve mlx-community/Phi-3.5-vision-instruct-4bit --tensor-parallel-size 2 --trust-remote-code --host 0.0.0.0 --port 8000 --max-model-len 4096 --dtype bfloat16 --gpu-memory-utilization 0.15 --limit-mm-per-prompt '{\"image\":1}' --served-model-name phi35"
         # ]
+        # args: [
+        #   "vllm serve Isotr0py/Phi-3.5-vision-instruct-AWQ --tensor-parallel-size 2 --trust-remote-code --host 0.0.0.0 --port 8000 --max-model-len 4096 --dtype bfloat16 --gpu-memory-utilization 0.15 --limit-mm-per-prompt '{\"image\":1}' --served-model-name phi35"
+        # ]
         args: [
-          "vllm serve Isotr0py/Phi-3.5-vision-instruct-AWQ --tensor-parallel-size 2 --trust-remote-code --host 0.0.0.0 --port 8000 --max-model-len 4096 --dtype bfloat16 --gpu-memory-utilization 0.15 --limit-mm-per-prompt '{\"image\":1}' --served-model-name phi35"
+          "vllm serve Isotr0py/Phi-3.5-vision-instruct-AWQ --quantization awq --tensor-parallel-size 2 --enable-prefix-caching --trust-remote-code --host 0.0.0.0 --port 8000 --max-model-len 4096 --dtype auto --gpu-memory-utilization 0.10 --limit-mm-per-prompt '{\"image\":2}' --served-model-name phi35"
         ]
+        # Isotr0py/Phi-3.5-vision-instruct-AWQ --quantization awq
         # env:
         # - name: HUGGING_FACE_HUB_TOKEN
         #   valueFrom:
@@ -107,7 +111,7 @@ spec:
   type: ClusterIP
 
 
-# uv run openai-llm-benchmark.py --base-url http://phi35.vllm.svc.cluster.local --model phi35-0.6b --requests 200 --concurrency 12
+# uv run openai-llm-benchmark.py --base-url http://phi35.vllm.svc.cluster.local --model phi35 --requests 200 --concurrency 128
 
 ---
 
