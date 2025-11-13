@@ -3,10 +3,13 @@
 # This should automate 90% of the work, maybe the rest might stay manual
 
 - name: Setup vLLM and dependencies
-  hosts: testing
+  # hosts: testing
+  hosts: "{{ target_host }}"
   gather_facts: true
   # serial: 1
   become: true
+  vars_files:
+    - vars/disks.yml
   tasks:
   # Gather some additional facts
   - name: Get nvidia_keyring fact
@@ -19,6 +22,17 @@
     register: nvidia_repo_list
   - name: Populate service facts
     ansible.builtin.service_facts:
+
+  - name: Extend volume group with available physical volumes
+    community.general.lvg:
+      vg: "{{ vg }}"
+      pvs: "{{ disks[ansible_host] }}"
+  
+  - name: Extend the logical volume to fill the entire volume group
+    community.general.lvol:
+      vg: "{{ vg }}"
+      lv: "{{ lv }}"
+      size: 100%FREE
 
   - name: Install pip
     ansible.builtin.apt:
