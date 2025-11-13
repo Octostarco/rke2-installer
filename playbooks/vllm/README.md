@@ -22,5 +22,5 @@ ansible-galaxy collection install -r requirements.yml
 
 # Step 3: run ansible playbook
 ```bash
-ansible-playbook octobox.yml
+ansible-playbook --extra-vars "target_host=octobox01" octobox.yml
 ```
