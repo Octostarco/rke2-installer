@@ -30,6 +30,14 @@ spec:
         emptyDir:
           medium: Memory
           sizeLimit: "16Gi"
+      initContainers:
+      - name: ensure-model-download
+        image: vllm/vllm-openai:v0.10.2
+        command: ["/bin/sh", "-c"]
+        args: ["stat /root/.cache/huggingface/qwen3 || python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"Qwen/Qwen3-30B-A3B-FP8\", local_dir=\"/root/.cache/huggingface/qwen3\")'"]
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: cache-volume
       containers:
       - name: qwen3
         # image: vllm/vllm-openai:v0.10.1.1
@@ -45,14 +53,14 @@ spec:
         #   "vllm serve Qwen/Qwen3-30B-A3B-FP8 --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser deepseek_r1 --tensor-parallel-size 2 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.5 --swap-space 16 --kv-cache-dtype auto --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 8 --served-model-name qwen3-30b"
         # ]
         args: [
-          "vllm serve Qwen/Qwen3-30B-A3B-FP8 --quantization fp8 --reasoning-parser deepseek_r1 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.50 --swap-space 16 --kv-cache-dtype auto --tensor-parallel-size 2 --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 4 --served-model-name qwen3-30b --enable-auto-tool-choice --tool-call-parser hermes"
+          "vllm serve /root/.cache/huggingface/qwen3 --quantization fp8 --reasoning-parser deepseek_r1 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.50 --swap-space 16 --kv-cache-dtype auto --tensor-parallel-size 2 --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 4 --served-model-name qwen3-30b --enable-auto-tool-choice --tool-call-parser hermes"
         ]
         # args: [
         #   "vllm serve nvidia/Qwen3-30B-A3B-FP4 --quantization fp4 --reasoning-parser deepseek_r1 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --generation-config vllm --gpu-memory-utilization 0.50 --swap-space 16 --kv-cache-dtype auto --tensor-parallel-size 2 --max-model-len 32000 --max-num-batched-tokens 32000 --max-num-seqs 4 --served-model-name qwen3-30b --enable-auto-tool-choice --tool-call-parser hermes"
         # ]
         env:
           - name: HF_HUB_OFFLINE
-            value: "0"
+            value: "1"
         # env:
         #- name: CUDA_VISIBLE_DEVICES                                                    
         #  value: "1"
