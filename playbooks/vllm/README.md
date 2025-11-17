@@ -11,6 +11,7 @@
    30  vgextend ubuntu-vg /dev/nvme3n1
    31  vgextend ubuntu-vg /dev/nvme4n1
    32  vgextend ubuntu-vg /dev/nvme5n1
+   33  lvresize -l +100%FREE --resizefs ubuntu-vg/ubuntu-lv
 ```
 
 # Step 2: setup ansible environment
@@ -22,5 +23,5 @@ ansible-galaxy collection install -r requirements.yml
 
 # Step 3: run ansible playbook
 ```bash
-ansible-playbook --extra-vars "target_host=octobox01" octobox.yml
+ansible-playbook -i inventory --extra-vars "target_host=octobox03" octobox.yml
 ```
