@@ -32,6 +32,20 @@ spec:
         emptyDir:
           medium: Memory
           sizeLimit: "16Gi"
+      initContainers:
+      - name: ensure-model-download
+        image: vllm/vllm-openai:v0.10.2
+        command: ["/bin/sh", "-c"]
+        args: ["stat /root/.cache/huggingface/phi35 || python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"microsoft/Phi-3.5-vision-instruct\", local_dir=\"/root/.cache/huggingface/phi35\")'"]
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: cache-volume
+        # args: [
+        #   ""
+        #   "python3",
+        #   "-c",
+        #   "from huggingface_hub import snapshot_download; snapshot_download(repo_id='microsoft/Phi-3.5-vision-instruct', local_dir='/root/.cache/huggingface/phi35')"
+        # ]
       containers:
       - name: phi35
         # image: vllm/vllm-openai:v0.10.1.1
@@ -53,8 +67,12 @@ spec:
         #   "vllm serve Isotr0py/Phi-3.5-vision-instruct-AWQ --tensor-parallel-size 2 --trust-remote-code --host 0.0.0.0 --port 8000 --max-model-len 4096 --dtype bfloat16 --gpu-memory-utilization 0.15 --limit-mm-per-prompt '{\"image\":1}' --served-model-name phi35"
         # ]
         args: [
-          "vllm serve Isotr0py/Phi-3.5-vision-instruct-AWQ --quantization awq --tensor-parallel-size 2 --enable-prefix-caching --trust-remote-code --host 0.0.0.0 --port 8000 --max-model-len 4096 --dtype auto --gpu-memory-utilization 0.10 --limit-mm-per-prompt '{\"image\":2}' --served-model-name phi35"
+          "vllm serve /root/.cache/huggingface/phi35 --tensor-parallel-size 2 --enable-prefix-caching --trust-remote-code --host 0.0.0.0 --port 8000 --max-model-len 4096 --dtype auto --gpu-memory-utilization 0.10 --limit-mm-per-prompt '{\"image\":2}' --served-model-name phi35"
         ]
+        # args: ["sleep inf"]
+        env:
+          - name: HF_HUB_OFFLINE
+            value: "1"
         # Isotr0py/Phi-3.5-vision-instruct-AWQ --quantization awq
         # env:
         # - name: HUGGING_FACE_HUB_TOKEN
