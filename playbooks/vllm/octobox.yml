@@ -162,6 +162,11 @@
       && chmod 700 get_helm.sh \
       && ./get_helm.sh
 
+  - name: Ensure /root/.kube exists
+    ansible.builtin.file:
+      path: /root/.kube
+      state: directory
+
   - name: Copy kubeconfig file so helm can see it (embedded kubectl looks at /etc/rancher/k3s/k3s.yaml)
     ansible.builtin.copy:
       remote_src: true
