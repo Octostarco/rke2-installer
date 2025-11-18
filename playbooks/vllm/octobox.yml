@@ -156,11 +156,17 @@
   #   ansible.builtin.pause:
   #     prompt: "Check k3s"
 
-  - name: Install helm
-    ansible.builtin.shell: >-
-      curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 \
-      && chmod 700 get_helm.sh \
-      && ./get_helm.sh
+  - name: Ensure helm is installed
+    block:
+      - name: Check if helm is installed
+        ansible.builtin.shell: helm --help
+        changed_when: false
+    rescue:
+      - name: Install helm
+        ansible.builtin.shell: >-
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 \
+          && chmod 700 get_helm.sh \
+          && ./get_helm.sh
 
   - name: Ensure /root/.kube exists
     ansible.builtin.file:
