@@ -8,7 +8,6 @@ collections:
   # Install a collection from Ansible Galaxy.
   - name: kubernetes.core
   - name: community.general
-    # version: 1.4.0
   - name: https://github.com/k3s-io/k3s-ansible.git
     type: git
-    version: <comit-ish>
+    
