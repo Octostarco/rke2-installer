@@ -35,7 +35,8 @@
       - cilium
 
     rke2_server_options:
-      - "--embedded-registry: true"
+      - "embedded-registry: true"
+      - "supervisor-metrics: true"
 
     rke2_custom_registry_mirrors:
       - name: "*"
