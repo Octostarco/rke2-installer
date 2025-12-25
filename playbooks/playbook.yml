@@ -41,6 +41,16 @@
     rke2_custom_registry_mirrors:
       - name: "*"
 
+    rke2_additional_sans: >-
+      {{
+        rke2_extra_sans
+        | default('')
+        | split(',')
+        | map('trim')
+        | reject('equalto','')
+        | list
+      }}
+
   pre_tasks:
 
     - name: Check if ubuntu
