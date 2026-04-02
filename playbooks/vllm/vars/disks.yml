@@ -1,7 +1,0 @@
-disks:
-  octobox03:
-    - nvme3n1
-    - nvme5n1
-    - nvme4n1
-    - nvme2n1
-    - nvme0n1

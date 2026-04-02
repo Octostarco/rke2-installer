@@ -1,17 +1,8 @@
-# TODO: setup lvm with disks and mount to /data. Create PVCs that mount /data
-
-# This should automate 90% of the work, maybe the rest might stay manual
-
 - name: Setup vLLM and dependencies
-  # hosts: testing
   hosts: "{{ target_host }}"
   gather_facts: true
-  # serial: 1
   become: true
-  # vars_files:
-  #   - vars/disks.yml
   tasks:
-  # Gather some additional facts
   - name: Get nvidia_keyring fact
     ansible.builtin.stat:
       path: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
@@ -22,17 +13,6 @@
     register: nvidia_repo_list
   - name: Populate service facts
     ansible.builtin.service_facts:
-
-  # - name: Extend volume group with available physical volumes
-  #   community.general.lvg:
-  #     vg: "{{ vg }}"
-  #     pvs: "{{ disks[ansible_host] }}"
-  
-  # - name: Extend the logical volume to fill the entire volume group
-  #   community.general.lvol:
-  #     vg: "{{ vg }}"
-  #     lv: "{{ lv }}"
-  #     size: 100%FREE
 
   - name: Remove unattended-upgrades
     ansible.builtin.apt:
@@ -122,10 +102,6 @@
         - nvidia-headless-{{ nvidia_driver_version }}-server-open
         - nvidia-utils-{{ nvidia_driver_version }}-server
 
-  # - name: Check nvidia drivers
-  #   ansible.builtin.pause:
-  #     prompt: "Check nvidia drivers"
-
   - name: Install k3s
     when: ansible_facts.services['k3s.service']['status'] | default('not-found') == 'not-found'
     # TODO: disable traefik at startup
@@ -151,10 +127,6 @@
     ansible.builtin.systemd:
       state: restarted
       name: k3s
-
-  # - name: Check k3s
-  #   ansible.builtin.pause:
-  #     prompt: "Check k3s"
 
   - name: Ensure helm is installed
     block:
@@ -213,8 +185,7 @@
       src: deployments/{{ item }}-deployment.yml
       dest: /root/{{ item }}-deployment.yml
     loop:
-      - qwen
-      - phi
+      - qwen35
     register: deployment_file
 
   - ansible.builtin.debug:
@@ -225,7 +196,6 @@
       state: present
       src: /root/{{ item }}-deployment.yml
     loop:
-      - qwen
-      - phi
+      - qwen35
 
   # In case you mess things up with the operator, refer to this: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/uninstall.html
