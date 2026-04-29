@@ -47,7 +47,7 @@
             "schedule_boot" : "false",
             "schedule_monthly_count" : "2",
             "schedule_weekly_count" : "3",
-            "schedule_daily_count" : "7",
+            "schedule_daily_count" : "3",
             "schedule_hourly_count" : "6",
             "schedule_boot_count" : "5",
             "exclude" : [],
