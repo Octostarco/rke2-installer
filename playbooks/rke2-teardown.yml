@@ -1,0 +1,43 @@
+- name: RKE2 Teardown
+  hosts: all
+  remote_user: root
+
+  tasks:
+
+    - name: Run rke2-killall.sh
+      ansible.builtin.shell: /usr/local/bin/rke2-killall.sh
+      ignore_errors: true
+
+    - name: Run rke2-uninstall.sh
+      ansible.builtin.shell: /usr/local/bin/rke2-uninstall.sh
+      ignore_errors: true
+
+    - name: Remove remaining directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/rancher
+        - /var/lib/rancher
+        - /var/lib/kubelet
+        - /run/k3s
+        - /etc/cni
+        - /opt/cni
+        - /var/log/pods
+        - /var/log/containers
+
+    - name: Remove Cilium network interfaces
+      ansible.builtin.shell: |
+        for iface in cilium_vxlan cilium_net cilium_host lxc_health; do
+          ip link delete $iface 2>/dev/null || true
+        done
+      changed_when: false
+
+    - name: Reboot to clear residual network state
+      ansible.builtin.reboot:
+        msg: "Reboot initiated by Ansible after RKE2 teardown"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: uptime
