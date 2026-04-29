@@ -6,7 +6,7 @@ metadata:
 spec:
   valuesContent: |-
     image:
-      tag: "v1.16.6"
+      tag: "v1.19.1"
     kubeProxyReplacement: true
     k8sServiceHost: {{ rke2_api_ip }}
     k8sServicePort: {{ rke2_apiserver_dest_port }}
@@ -19,4 +19,4 @@ spec:
       relay:
         enabled: true
         image:
-          tag: "v1.16.6"
+          tag: "v1.19.1"

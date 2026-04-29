@@ -1,0 +1,93 @@
+- name: Infrastructure Setup
+  hosts: all
+  remote_user: root
+
+  tasks:
+
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install timeshift
+      apt:
+        name: timeshift
+        state: present
+
+    - name: Create timeshift config directory
+      ansible.builtin.file:
+        path: /etc/timeshift
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Get root device UUID
+      ansible.builtin.shell:
+        cmd: blkid -s UUID -o value $(df --output=source / | tail -1)
+      register: root_uuid
+      changed_when: false
+
+    - name: Configure timeshift
+      ansible.builtin.copy:
+        dest: /etc/timeshift/timeshift.json
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          {
+            "backup_device_uuid" : "{{ root_uuid.stdout }}",
+            "do_first_run" : "false",
+            "btrfs_mode" : "false",
+            "stop_cron_emails" : "true",
+            "schedule_monthly" : "false",
+            "schedule_weekly" : "false",
+            "schedule_daily" : "false",
+            "schedule_hourly" : "false",
+            "schedule_boot" : "false",
+            "schedule_monthly_count" : "2",
+            "schedule_weekly_count" : "3",
+            "schedule_daily_count" : "7",
+            "schedule_hourly_count" : "6",
+            "schedule_boot_count" : "5",
+            "exclude" : [],
+            "exclude-apps" : []
+          }
+
+    - name: Schedule daily timeshift snapshot at 03:00
+      ansible.builtin.cron:
+        name: timeshift-daily
+        hour: "3"
+        minute: "0"
+        job: "/usr/bin/timeshift --create --comments 'Daily snapshot' --tags D >> /var/log/timeshift-cron.log 2>&1"
+        user: root
+
+    - name: Disable swap
+      ansible.builtin.shell: swapoff -a
+      changed_when: false
+
+    - name: Comment out swap entries in fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].* swap .*)$'
+        replace: '# \1'
+
+    - name: Disable and stop ufw
+      ansible.builtin.systemd:
+        name: ufw
+        state: stopped
+        enabled: false
+
+    - name: Disable and stop apparmor
+      ansible.builtin.systemd:
+        name: apparmor
+        state: stopped
+        enabled: false
+
+    - name: Enable IPv4 forwarding for Kubernetes
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_file: /etc/sysctl.d/99-kubernetes-cri.conf
+        state: present
+        reload: true
