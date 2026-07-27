@@ -1,5 +1,9 @@
 ---
-# from github.com
-- src: https://github.com/Octostarco/ansible-role-rke2
-  scm: git
-  name: rke2
+roles:
+  - src: https://github.com/Octostarco/ansible-role-rke2
+    scm: git
+    name: rke2
+
+collections:
+  - name: ansible.posix
+  - name: community.general
