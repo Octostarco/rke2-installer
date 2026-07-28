@@ -109,8 +109,15 @@
     # ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia" sh -
 
   # systemd only honours the kubelet's shutdown inhibitor lock for up to
-  # InhibitDelayMaxSec (default 5s), so shutdownGracePeriod below is capped by
-  # this. Without it, pods are still SIGKILLed on reboot.
+  # InhibitDelayMaxSec, so shutdownGracePeriod below is capped by this. If the
+  # cap is lower, the kubelet silently reports shutdownGracePeriod 0s and pods
+  # are still SIGKILLed on reboot - no warning is logged.
+  #
+  # The zz- prefix is required: logind drop-ins are merged in lexicographic
+  # filename order across /etc and /usr/lib, and /etc only wins over /usr/lib
+  # for the *same* filename. unattended-upgrades ships
+  # /usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf
+  # with InhibitDelayMaxSec=30, which beats any numeric prefix.
   - name: Ensure systemd-logind drop-in directory exists
     ansible.builtin.file:
       path: /etc/systemd/logind.conf.d
@@ -119,7 +126,7 @@
 
   - name: Allow systemd to hold shutdown long enough for kubelet to drain pods
     ansible.builtin.copy:
-      dest: /etc/systemd/logind.conf.d/10-k3s-inhibit-delay.conf
+      dest: /etc/systemd/logind.conf.d/zz-k3s-inhibit-delay.conf
       content: |
         [Login]
         InhibitDelayMaxSec=120
