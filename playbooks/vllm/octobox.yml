@@ -108,7 +108,30 @@
     ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia --advertise-address 172.31.255.1" sh -
     # ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia" sh -
 
-  - name: Ensure system-reserved and kube-reserved for newer k3s versions
+  # systemd only honours the kubelet's shutdown inhibitor lock for up to
+  # InhibitDelayMaxSec (default 5s), so shutdownGracePeriod below is capped by
+  # this. Without it, pods are still SIGKILLed on reboot.
+  - name: Ensure systemd-logind drop-in directory exists
+    ansible.builtin.file:
+      path: /etc/systemd/logind.conf.d
+      state: directory
+      mode: "0755"
+
+  - name: Allow systemd to hold shutdown long enough for kubelet to drain pods
+    ansible.builtin.copy:
+      dest: /etc/systemd/logind.conf.d/10-k3s-inhibit-delay.conf
+      content: |
+        [Login]
+        InhibitDelayMaxSec=120
+    register: k3s_inhibit_delay
+
+  - name: Reload systemd-logind so the new inhibit delay applies
+    when: k3s_inhibit_delay.changed
+    ansible.builtin.systemd:
+      state: restarted
+      name: systemd-logind
+
+  - name: Ensure kubelet reservations, pod limit and graceful shutdown for newer k3s versions
     ansible.builtin.copy:
       dest: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/90-k3s-reservations.conf
       content: |
@@ -120,6 +143,14 @@
         kubeReserved:
           cpu: "1"
           memory: "2Gi"
+        # TEAM-7147: the rke2/k3s default of ~110 is not enough during the
+        # NiFi -> Temporal pipeline transition, when both stacks run together.
+        maxPods: 200
+        # k3s ships shutdownGracePeriod: 0s in 00-k3s-defaults.conf, so pods are
+        # SIGKILLed on reboot. That corrupted redis' AOF and left dangling XA
+        # transactions in mysql on octobox01. Give stateful pods time to flush.
+        shutdownGracePeriod: 90s
+        shutdownGracePeriodCriticalPods: 30s
     register: k3s_reservations
 
   - name: Restart k3s service
