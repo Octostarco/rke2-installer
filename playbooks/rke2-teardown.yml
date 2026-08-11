@@ -4,22 +4,47 @@
 
   tasks:
 
-    # `removes:` skips the task when RKE2 was never installed, which is the only
-    # case the previous `ignore_errors: true` was meant to cover. Keeping
-    # ignore_errors would also have swallowed a genuine failure (e.g. killall
-    # ran but could not stop containerd), leaving the box half torn down while
-    # the play happily rebooted it.
+    # "Was RKE2 ever here" has to be decided before anything runs, and it cannot
+    # be inferred from the scripts alone: rke2-uninstall.sh deletes itself (and
+    # rke2-killall.sh) from an EXIT trap even when it fails part way through, so
+    # a host left dirty by a failed teardown looks identical to a clean one on
+    # the next run. /var/lib/rancher surviving is what distinguishes the two.
+    - name: Look for the RKE2 uninstall scripts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: rke2_scripts
+      loop:
+        - /usr/local/bin/rke2-killall.sh
+        - /usr/local/bin/rke2-uninstall.sh
+
+    - name: Look for RKE2 residue left by a previous failed teardown
+      ansible.builtin.stat:
+        path: /var/lib/rancher
+      register: rke2_residue
+
+    - name: Record whether this host has RKE2 to tear down
+      ansible.builtin.set_fact:
+        rke2_present: >-
+          {{ (rke2_scripts.results | selectattr('stat.exists') | list | length > 0)
+             or rke2_residue.stat.exists }}
+
+    # failed_when: false rather than ignore_errors, plus an explicit check at the
+    # end of the play: a script that errors must not stop the directory cleanup
+    # and reboot below (that is what leaves a host half torn down and unable to
+    # be re-installed), but it must still fail the play rather than pass silently.
     - name: Run rke2-killall.sh
       ansible.builtin.shell: /usr/local/bin/rke2-killall.sh
       args:
         removes: /usr/local/bin/rke2-killall.sh
       register: rke2_killall
+      failed_when: false
 
     - name: Run rke2-uninstall.sh
       ansible.builtin.shell: /usr/local/bin/rke2-uninstall.sh
       args:
         removes: /usr/local/bin/rke2-uninstall.sh
       register: rke2_uninstall
+      failed_when: false
 
     - name: Remove remaining directories
       ansible.builtin.file:
@@ -42,9 +67,14 @@
         done
       changed_when: false
 
-    # Don't bounce a host that never had RKE2 on it in the first place.
+    # Don't bounce a host that never had RKE2 on it in the first place. Keying
+    # this off `.skipped` does not work: when `removes:` short-circuits, the
+    # command module exits with changed=False and rc=0 and never sets `skipped`
+    # at all (it is only set in the check-mode branch, and only when neither
+    # creates nor removes was given), so the guard silently read as false and
+    # every host got rebooted.
     - name: Reboot to clear residual network state
-      when: not (rke2_killall.skipped | default(false) and rke2_uninstall.skipped | default(false))
+      when: rke2_present
       ansible.builtin.reboot:
         msg: "Reboot initiated by Ansible after RKE2 teardown"
         connect_timeout: 5
@@ -52,3 +82,13 @@
         pre_reboot_delay: 0
         post_reboot_delay: 30
         test_command: uptime
+
+    - name: Fail if either teardown script errored
+      when: (rke2_killall.rc | default(0)) != 0 or (rke2_uninstall.rc | default(0)) != 0
+      ansible.builtin.fail:
+        msg: >-
+          RKE2 teardown scripts reported an error
+          (killall rc={{ rke2_killall.rc | default('n/a') }},
+          uninstall rc={{ rke2_uninstall.rc | default('n/a') }}).
+          Directory cleanup and the reboot still ran, so the host should be usable,
+          but check for leftover mounts under /var/lib/kubelet before reinstalling.
