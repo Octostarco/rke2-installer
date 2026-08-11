@@ -6,6 +6,23 @@
     # Escape hatch for the reservation-flag check further down; see the comment
     # on "Fail when the running k3s unit would shadow the reservations drop-in".
     octobox_allow_stale_kubelet_flags: false
+
+    # This play was written for the bare-metal octoboxes. On EC2 two of its
+    # assumptions are wrong and one is actively harmful, so the affected tasks
+    # are gated on this. Autodetected from the SMBIOS vendor; override with
+    # -e octobox_is_ec2=true/false. Always compare with `| bool`: that override
+    # arrives as the bare string "false", which is truthy to Jinja, so a plain
+    # `when: octobox_is_ec2` would read it as true and do the opposite.
+    octobox_is_ec2: "{{ ansible_facts['system_vendor'] | default('') == 'Amazon EC2' }}"
+
+    # k3s advertises a fixed dummy0 address on bare metal so it is not confused
+    # when ethernet cards are switched. On EC2 the primary ENI IP is already
+    # stable across stop/start, so that problem does not exist - and 172.31.255.1
+    # sits inside the default VPC CIDR 172.31.0.0/16, where it can collide with a
+    # real instance address.
+    octobox_dummy0_ip: 172.31.255.1
+    k3s_advertise_address: >-
+      {{ ansible_default_ipv4.address if (octobox_is_ec2 | bool) else octobox_dummy0_ip }}
   tasks:
   - name: Get nvidia_keyring fact
     ansible.builtin.stat:
@@ -23,13 +40,13 @@
       name: unattended-upgrades
       state: absent
 
+  # network-manager is only here to create dummy0. Installing it on EC2 Ubuntu
+  # means NetworkManager takes over interfaces that netplan is managing, which
+  # is exactly the ENI disruption the dummy0 tasks below are skipped to avoid.
   - name: Install pip and nmcli
     ansible.builtin.apt:
       update_cache: yes
-      pkg:
-        - python3-pip
-        # for creating dummy network
-        - network-manager
+      pkg: "{{ ['python3-pip'] + ([] if (octobox_is_ec2 | bool) else ['network-manager']) }}"
 
   - name: Install pip dependencies for k8s ansible module
     ansible.builtin.pip:
@@ -43,7 +60,13 @@
   # - name: Create dummy loopback interface so k3s is not confused when switching ethernet cards
   #   ansible.builtin.shell: nmcli connection add type dummy ifname dummy0 ipv4.addresses 172.31.255.1/32 ipv4.method manual autoconnect yes
 
+  # The whole dummy0 dance is a bare-metal workaround: it gives k3s an address
+  # that survives swapping ethernet cards. EC2 does not have that problem (the
+  # primary ENI IP is stable across stop/start), and restarting NetworkManager
+  # there risks disturbing the netplan-managed ENI config - i.e. dropping the
+  # connection this play is running over.
   - name: Enable rule to manage dummy network interface
+    when: not (octobox_is_ec2 | bool)
     ansible.builtin.copy:
       dest: "/etc/NetworkManager/conf.d/90-manage-dummy0.conf"
       content: |
@@ -52,17 +75,20 @@
     register: nmcli_dummy0_managed
 
   - name: Restart NetworkManager
-    when: nmcli_dummy0_managed.changed
+    when:
+      - not (octobox_is_ec2 | bool)
+      - nmcli_dummy0_managed.changed
     ansible.builtin.systemd:
       state: restarted
       name: NetworkManager
 
   - name: Create dummy loopback interface so k3s is not confused when switching ethernet cards
+    when: not (octobox_is_ec2 | bool)
     community.general.nmcli:
       conn_name: dummy0
       ifname: dummy0
       type: dummy
-      ip4: 172.31.255.1/32
+      ip4: "{{ octobox_dummy0_ip }}/32"
       method4: manual
       state: present
       autoconnect: true
@@ -107,7 +133,12 @@
         - libnvidia-container-tools={{nvidia_toolkit_version }}
         - libnvidia-container1={{nvidia_toolkit_version }}
 
+  # Skipped on EC2: the Deep Learning AMI already ships a newer driver (595.71.05
+  # at time of writing, running real sm_120 compute), so installing 580 here is a
+  # downgrade. cuda-drivers-fabricmanager is for NVSwitch systems, which the
+  # g7e instances do not have.
   - name: Install k3s compatible drivers
+    when: not (octobox_is_ec2 | bool)
     vars:
       nvidia_driver_version: 580
     ansible.builtin.apt:
@@ -141,7 +172,7 @@
   - name: Install k3s
     when: ansible_facts.services['k3s.service']['status'] | default('not-found') == 'not-found'
     # TODO: disable traefik at startup
-    ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia --advertise-address 172.31.255.1" sh -
+    ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia --advertise-address {{ k3s_advertise_address | trim }}" sh -
     # ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia" sh -
 
   # The guard above means an already-provisioned box never gets its unit file
