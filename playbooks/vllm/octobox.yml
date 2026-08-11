@@ -1,0 +1,300 @@
+- name: Setup vLLM and dependencies
+  hosts: "{{ target_host }}"
+  gather_facts: true
+  become: true
+  tasks:
+  - name: Get nvidia_keyring fact
+    ansible.builtin.stat:
+      path: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    register: nvidia_keyring
+  - name: Get nvidia repo list
+    ansible.builtin.stat:
+      path: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    register: nvidia_repo_list
+  - name: Populate service facts
+    ansible.builtin.service_facts:
+
+  - name: Remove unattended-upgrades
+    ansible.builtin.apt:
+      name: unattended-upgrades
+      state: absent
+
+  - name: Install pip and nmcli
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+        - python3-pip
+        # for creating dummy network
+        - network-manager
+
+  - name: Install pip dependencies for k8s ansible module
+    ansible.builtin.pip:
+      break_system_packages: true
+      name:
+        - kubernetes
+        - pyyaml
+        - jsonpatch
+
+  # This one worked
+  # - name: Create dummy loopback interface so k3s is not confused when switching ethernet cards
+  #   ansible.builtin.shell: nmcli connection add type dummy ifname dummy0 ipv4.addresses 172.31.255.1/32 ipv4.method manual autoconnect yes
+
+  - name: Enable rule to manage dummy network interface
+    ansible.builtin.copy:
+      dest: "/etc/NetworkManager/conf.d/90-manage-dummy0.conf"
+      content: |
+        [keyfile]
+        unmanaged-devices=interface-name:!*dummy0
+    register: nmcli_dummy0_managed
+
+  - name: Restart NetworkManager
+    when: nmcli_dummy0_managed.changed
+    ansible.builtin.systemd:
+      state: restarted
+      name: NetworkManager
+
+  - name: Create dummy loopback interface so k3s is not confused when switching ethernet cards
+    community.general.nmcli:
+      conn_name: dummy0
+      ifname: dummy0
+      type: dummy
+      ip4: 172.31.255.1/32
+      method4: manual
+      state: present
+      autoconnect: true
+
+  # - name: Check dummy network
+  #   ansible.builtin.pause:
+  #     prompt: "Check dummy network"
+
+  # TODO: add label '"nvidia.com/gpu.present: "true"' to node, so nvidia device plugin daemonset gets scheduled there
+
+  # Both tasks below build their destination via a pipe/redirect, so they write
+  # to a temporary file first and only move it into place once the whole
+  # pipeline succeeded. Otherwise a failed download leaves an empty file behind
+  # and the `when: not ... .stat.exists` guard skips the task on every later
+  # run, permanently stranding the box with a broken keyring/repo list.
+  #
+  # Note: these commands must stay on a single line. In a folded (>-) scalar a
+  # trailing backslash is joined to the next line with a space and becomes an
+  # escaped space, which the shell parses as a word of its own rather than a
+  # line continuation.
+  - name: Fetch nvidia repo gpg key
+    when: not nvidia_keyring.stat.exists
+    ansible.builtin.shell:
+      cmd: set -o pipefail && curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /tmp/nvidia-container-toolkit-keyring.gpg && mv /tmp/nvidia-container-toolkit-keyring.gpg /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      executable: /bin/bash
+
+  - name: Add nvidia repo
+    when: not nvidia_repo_list.stat.exists
+    ansible.builtin.shell:
+      cmd: set -o pipefail && curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /tmp/nvidia-container-toolkit.list && mv /tmp/nvidia-container-toolkit.list /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      executable: /bin/bash
+
+  # https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#next-steps
+  - name: Install nvidia container runtime (toolkit)
+    vars:
+      nvidia_toolkit_version: 1.17.8-1
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+        - nvidia-container-toolkit={{nvidia_toolkit_version }}
+        - nvidia-container-toolkit-base={{nvidia_toolkit_version }}
+        - libnvidia-container-tools={{nvidia_toolkit_version }}
+        - libnvidia-container1={{nvidia_toolkit_version }}
+
+  - name: Install k3s compatible drivers
+    vars:
+      nvidia_driver_version: 580
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+        - nvidia-container-runtime
+        - cuda-drivers-fabricmanager-{{ nvidia_driver_version }}
+        - nvidia-headless-{{ nvidia_driver_version }}-server-open
+        - nvidia-utils-{{ nvidia_driver_version }}-server
+
+  - name: Install k3s
+    when: ansible_facts.services['k3s.service']['status'] | default('not-found') == 'not-found'
+    # TODO: disable traefik at startup
+    ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia --advertise-address 172.31.255.1" sh -
+    # ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia" sh -
+
+  # systemd only honours the kubelet's shutdown inhibitor lock for up to
+  # InhibitDelayMaxSec, so shutdownGracePeriod below is capped by this. If the
+  # cap is lower, the kubelet silently reports shutdownGracePeriod 0s and pods
+  # are still SIGKILLed on reboot - no warning is logged.
+  #
+  # The zz- prefix is required: logind drop-ins are merged in lexicographic
+  # filename order across /etc and /usr/lib, and /etc only wins over /usr/lib
+  # for the *same* filename. unattended-upgrades ships
+  # /usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf
+  # with InhibitDelayMaxSec=30, which beats any numeric prefix.
+  - name: Ensure systemd-logind drop-in directory exists
+    ansible.builtin.file:
+      path: /etc/systemd/logind.conf.d
+      state: directory
+      mode: "0755"
+
+  - name: Allow systemd to hold shutdown long enough for kubelet to drain pods
+    ansible.builtin.copy:
+      dest: /etc/systemd/logind.conf.d/zz-k3s-inhibit-delay.conf
+      content: |
+        [Login]
+        InhibitDelayMaxSec=120
+    register: k3s_inhibit_delay
+
+  - name: Reload systemd-logind so the new inhibit delay applies
+    when: k3s_inhibit_delay.changed
+    ansible.builtin.systemd:
+      state: restarted
+      name: systemd-logind
+
+  # k3s only creates this directory once the agent has started, so on a first
+  # run the copy below would fail with "Destination directory does not exist".
+  - name: Ensure k3s kubelet drop-in directory exists
+    ansible.builtin.file:
+      path: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+      state: directory
+      mode: "0755"
+
+  - name: Ensure kubelet reservations, pod limit and graceful shutdown for newer k3s versions
+    ansible.builtin.copy:
+      dest: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/90-k3s-reservations.conf
+      content: |
+        apiVersion: kubelet.config.k8s.io/v1beta1
+        kind: KubeletConfiguration
+        systemReserved:
+          cpu: "6"
+          memory: "26Gi"
+        kubeReserved:
+          cpu: "1"
+          memory: "2Gi"
+        # TEAM-7147: the rke2/k3s default of ~110 is not enough during the
+        # NiFi -> Temporal pipeline transition, when both stacks run together.
+        maxPods: 200
+        # k3s ships shutdownGracePeriod: 0s in 00-k3s-defaults.conf, so pods are
+        # SIGKILLed on reboot. That corrupted redis' AOF and left dangling XA
+        # transactions in mysql on octobox01. Give stateful pods time to flush.
+        shutdownGracePeriod: 90s
+        shutdownGracePeriodCriticalPods: 30s
+    register: k3s_reservations
+
+  - name: Restart k3s service
+    when: k3s_reservations.changed
+    ansible.builtin.systemd:
+      state: restarted
+      name: k3s
+
+  - name: Ensure helm is installed
+    block:
+      - name: Check if helm is installed
+        ansible.builtin.shell: helm --help
+        changed_when: false
+    rescue:
+      # Block scalar (|), not folded (>-): a folded scalar turns the trailing
+      # backslashes into escaped spaces, so curl was handed a bogus extra URL
+      # argument, exited 3, and helm never actually got installed.
+      - name: Install helm
+        ansible.builtin.shell: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 /tmp/get_helm.sh
+          /tmp/get_helm.sh
+        args:
+          executable: /bin/bash
+
+  - name: Ensure /root/.kube exists
+    ansible.builtin.file:
+      path: /root/.kube
+      state: directory
+
+  - name: Copy kubeconfig file so helm can see it (embedded kubectl looks at /etc/rancher/k3s/k3s.yaml)
+    ansible.builtin.copy:
+      remote_src: true
+      src: /etc/rancher/k3s/k3s.yaml
+      dest: /root/.kube/config
+
+  - name: Enable nvidia helm repository
+    kubernetes.core.helm_repository:
+      name: nvdp
+      repo_url: https://nvidia.github.io/k8s-device-plugin
+  
+  # - name: Install k8s-device-plugin helmchart
+  #   ansible.builtin.shell: >-
+  #     helm upgrade -i nvdp nvdp/nvidia-device-plugin \
+  #       --namespace nvidia-device-plugin \
+  #       --create-namespace \
+  #       --version 0.17.1
+  #   changed_when: does not exist
+
+  - name: Install k8s-device-plugin helmchart
+    kubernetes.core.helm:
+      name: nvdp
+      chart_ref: nvdp/nvidia-device-plugin
+      chart_version: 0.17.1
+      create_namespace: true
+      release_namespace: nvidia-device-plugin
+
+  - name: Create vllm namespace
+    kubernetes.core.k8s:
+      name: vllm
+      api_version: v1
+      kind: Namespace
+      state: present
+
+  # qwen36 asks for 0.55 of the GPU and qwen35 for 0.50, so on a box that
+  # already runs qwen35 the new pod cannot fit until the old one is gone.
+  # The PVCs are deliberately left behind - dropping them would throw away the
+  # downloaded weights.
+  #
+  # Foreground propagation + wait is what makes this correct: without it the
+  # module returns as soon as the API server accepts the delete, qwen36 is
+  # applied while the old vLLM process still holds its share of the GPU, and
+  # the new pod CUDA-OOMs into CrashLoopBackOff - exactly the contention this
+  # task exists to avoid. Foreground keeps the Deployment object around until
+  # its ReplicaSets and Pods are actually gone.
+  - name: Remove retired vLLM deployments
+    kubernetes.core.k8s:
+      state: absent
+      api_version: apps/v1
+      kind: Deployment
+      namespace: vllm
+      name: "{{ item }}"
+      wait: true
+      wait_timeout: 300
+      delete_options:
+        propagationPolicy: Foreground
+    loop:
+      - qwen3
+      - qwen35
+      - phi35
+
+  - name: Remove retired vLLM services
+    kubernetes.core.k8s:
+      state: absent
+      api_version: v1
+      kind: Service
+      namespace: vllm
+      name: "{{ item }}"
+    loop:
+      - qwen3
+      - qwen35
+      - phi35
+
+  - name: Copy deployments files
+    ansible.builtin.copy:
+      # remote_src: true
+      src: deployments/{{ item }}-deployment.yml
+      dest: /root/{{ item }}-deployment.yml
+    loop:
+      - qwen36
+
+  - name: Apply k8s deployments
+    kubernetes.core.k8s:
+      state: present
+      src: /root/{{ item }}-deployment.yml
+    loop:
+      - qwen36
+
+  # In case you mess things up with the operator, refer to this: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/uninstall.html

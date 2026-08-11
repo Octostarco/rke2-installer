@@ -4,13 +4,22 @@
 
   tasks:
 
+    # `removes:` skips the task when RKE2 was never installed, which is the only
+    # case the previous `ignore_errors: true` was meant to cover. Keeping
+    # ignore_errors would also have swallowed a genuine failure (e.g. killall
+    # ran but could not stop containerd), leaving the box half torn down while
+    # the play happily rebooted it.
     - name: Run rke2-killall.sh
       ansible.builtin.shell: /usr/local/bin/rke2-killall.sh
-      ignore_errors: true
+      args:
+        removes: /usr/local/bin/rke2-killall.sh
+      register: rke2_killall
 
     - name: Run rke2-uninstall.sh
       ansible.builtin.shell: /usr/local/bin/rke2-uninstall.sh
-      ignore_errors: true
+      args:
+        removes: /usr/local/bin/rke2-uninstall.sh
+      register: rke2_uninstall
 
     - name: Remove remaining directories
       ansible.builtin.file:
@@ -33,7 +42,9 @@
         done
       changed_when: false
 
+    # Don't bounce a host that never had RKE2 on it in the first place.
     - name: Reboot to clear residual network state
+      when: not (rke2_killall.skipped | default(false) and rke2_uninstall.skipped | default(false))
       ansible.builtin.reboot:
         msg: "Reboot initiated by Ansible after RKE2 teardown"
         connect_timeout: 5

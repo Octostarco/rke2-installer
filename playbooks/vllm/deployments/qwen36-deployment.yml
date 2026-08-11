@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen36
+  namespace: vllm
+  labels:
+    app: qwen36
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen36
+  strategy:
+    # Strategy is set to recreate so the old vLLM pod is killed before the new one starts
+    # otherwise, some GPU contention problems arise that cause the new pod to keep crashing before the old pod is killed
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: qwen36
+    spec:
+      volumes:
+      - name: cache-volume
+        persistentVolumeClaim:
+          claimName: qwen36-pvc
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "16Gi"
+      initContainers:
+      # The guard keys off a sentinel written only after snapshot_download
+      # returns, not off the model directory itself: snapshot_download creates
+      # that directory up front, so an interrupted download (reboot, eviction,
+      # network blip) would otherwise look like a finished one on the next
+      # start. The main container runs with HF_HUB_OFFLINE=1 and could never
+      # repair it, leaving the pod in CrashLoopBackOff until the PVC is wiped
+      # by hand.
+      - name: ensure-model-download
+        image: vllm/vllm-openai:v0.19.1
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          if [ -f /root/.cache/huggingface/qwen36/.download-complete ]; then
+            echo "model already present, skipping download"
+            exit 0
+          fi
+          rm -rf /root/.cache/huggingface/qwen36
+          python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="Qwen/Qwen3.6-27B-FP8", local_dir="/root/.cache/huggingface/qwen36")'
+          touch /root/.cache/huggingface/qwen36/.download-complete
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: cache-volume
+      containers:
+      - name: qwen3
+        image: vllm/vllm-openai:v0.19.1
+        command: ["/bin/sh", "-c"]
+        args: [
+          "vllm serve /root/.cache/huggingface/qwen36 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 131072 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 8 --served-model-name qwen36 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8"
+        ]
+        env:
+          - name: HF_HUB_OFFLINE
+            value: "1"
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            cpu: "2"
+            memory: 6G
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: cache-volume
+        - name: shm
+          mountPath: /dev/shm
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 3600
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 5
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen36
+  namespace: vllm
+spec:
+  ports:
+  - name: http-qwen36
+    port: 80
+    protocol: TCP
+    targetPort: 8000
+  # The label selector should match the deployment labels & it is useful for prefix caching feature
+  selector:
+    app: qwen36
+  sessionAffinity: None
+  type: ClusterIP
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen36-pvc
+  namespace: vllm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: local-path

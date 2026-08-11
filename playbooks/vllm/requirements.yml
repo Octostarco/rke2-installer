@@ -1,0 +1,13 @@
+---
+# roles:
+#   # Install a role from Ansible Galaxy.
+#   - name: geerlingguy.mysql
+#     version: 4.3.3
+
+collections:
+  # Install a collection from Ansible Galaxy.
+  - name: kubernetes.core
+  - name: community.general
+  - name: https://github.com/k3s-io/k3s-ansible.git
+    type: git
+    

@@ -24,9 +24,13 @@
 
     - name: Get root device UUID
       ansible.builtin.shell:
-        cmd: blkid -s UUID -o value $(df --output=source / | tail -1)
+        cmd: set -o pipefail && blkid -s UUID -o value "$(df --output=source / | tail -1)"
+        executable: /bin/bash
       register: root_uuid
       changed_when: false
+      # An empty UUID would be written into timeshift.json unnoticed and the
+      # nightly snapshot cron would then fail silently every night.
+      failed_when: root_uuid.rc != 0 or (root_uuid.stdout | trim | length == 0)
 
     - name: Configure timeshift
       ansible.builtin.copy:
@@ -66,10 +70,13 @@
       ansible.builtin.shell: swapoff -a
       changed_when: false
 
+    # Use \s, not literal spaces: Ubuntu's installer (curtin) writes the swap
+    # entry tab-separated ("/swap.img\tnone\tswap\tsw\t0\t0"), so a literal
+    # " swap " never matches and swap silently comes back on the next reboot.
     - name: Comment out swap entries in fstab
       ansible.builtin.replace:
         path: /etc/fstab
-        regexp: '^([^#].* swap .*)$'
+        regexp: '^([^#]\S*\s+\S+\s+swap\s+.*)$'
         replace: '# \1'
 
     - name: Disable and stop ufw
