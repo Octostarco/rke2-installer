@@ -2,6 +2,10 @@
   hosts: "{{ target_host }}"
   gather_facts: true
   become: true
+  vars:
+    # Escape hatch for the reservation-flag check further down; see the comment
+    # on "Fail when the running k3s unit would shadow the reservations drop-in".
+    octobox_allow_stale_kubelet_flags: false
   tasks:
   - name: Get nvidia_keyring fact
     ansible.builtin.stat:
@@ -114,11 +118,67 @@
         - nvidia-headless-{{ nvidia_driver_version }}-server-open
         - nvidia-utils-{{ nvidia_driver_version }}-server
 
+  # Installing a driver does not reload the running kernel module, so a box that
+  # already had an older nvidia driver loaded keeps serving it until a reboot.
+  # Nothing above fails in that case: the device plugin and the vLLM pods come up
+  # into "Failed to initialize NVML: Driver/library version mismatch" while
+  # ansible-playbook exits 0. Surface it here rather than in CrashLoopBackOff.
+  - name: Check the nvidia driver is usable
+    ansible.builtin.command: nvidia-smi
+    register: nvidia_smi
+    changed_when: false
+    failed_when: false
+
+  - name: Fail when the nvidia driver is not usable
+    when: nvidia_smi.rc != 0
+    ansible.builtin.fail:
+      msg: >-
+        nvidia-smi exited {{ nvidia_smi.rc }}:
+        {{ (nvidia_smi.stderr | default('', true) or nvidia_smi.stdout | default('', true)) | trim }}
+        This host most likely needs a reboot for the installed driver to load.
+        GPU workloads applied now would fail with NVML initialisation errors.
+
   - name: Install k3s
     when: ansible_facts.services['k3s.service']['status'] | default('not-found') == 'not-found'
     # TODO: disable traefik at startup
     ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia --advertise-address 172.31.255.1" sh -
     # ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia" sh -
+
+  # The guard above means an already-provisioned box never gets its unit file
+  # rewritten, so boxes installed before ba11344 still carry the reservations
+  # that INSTALL_K3S_EXEC used to pass as flags (467c3d9):
+  #   --kubelet-arg='system-reserved=cpu=6,memory=26Gi'
+  #   --kubelet-arg='kube-reserved=cpu=1,memory=2Gi'
+  # Kubelet command-line flags beat the equivalent fields of a
+  # KubeletConfiguration drop-in, so on exactly the hosts already in production
+  # systemReserved/kubeReserved in 90-k3s-reservations.conf below are shadowed:
+  # a later change to those values reports changed, restarts k3s, and has no
+  # effect. Precedence is per-field, so maxPods and shutdownGracePeriod - never
+  # passed as flags on the octoboxes - do still apply.
+  #
+  # Stop rather than rewrite the unit: clearing the flags means regenerating
+  # ExecStart, which is the installer's job and restarts the cluster, so it
+  # should be a deliberate act. Re-run the k3s installer with the current
+  # INSTALL_K3S_EXEC to clear them, or set the override to proceed knowingly.
+  - name: Check the k3s unit for reservation flags that shadow the drop-in
+    when: ansible_facts.services['k3s.service'] is defined
+    ansible.builtin.command: grep -c -- "--kubelet-arg=.*-reserved=" /etc/systemd/system/k3s.service
+    register: k3s_stale_flags
+    changed_when: false
+    failed_when: false
+
+  - name: Fail when the running k3s unit would shadow the reservations drop-in
+    when:
+      - not octobox_allow_stale_kubelet_flags
+      - (k3s_stale_flags.stdout | default('0') | int) > 0
+    ansible.builtin.fail:
+      msg: >-
+        /etc/systemd/system/k3s.service still passes system-reserved/kube-reserved
+        as --kubelet-arg flags, which override systemReserved/kubeReserved in
+        90-k3s-reservations.conf - editing that file would silently do nothing.
+        Re-run the k3s installer on this host with the INSTALL_K3S_EXEC from the
+        "Install k3s" task above (this restarts k3s), or re-run this play with
+        -e octobox_allow_stale_kubelet_flags=true to continue anyway.
 
   # systemd only honours the kubelet's shutdown inhibitor lock for up to
   # InhibitDelayMaxSec, so shutdownGracePeriod below is capped by this. If the
@@ -180,11 +240,35 @@
         shutdownGracePeriodCriticalPods: 30s
     register: k3s_reservations
 
+  # The inhibit-delay drop-in has to be in this condition too. The kubelet reads
+  # CurrentInhibitDelay from logind once, at start, so on a box provisioned by
+  # ba11344 - where only the logind file changes on a re-run - restarting logind
+  # alone never reaches the running kubelet and graceful shutdown stays off. The
+  # next reboot then still SIGKILLs pods with no drain, which is the whole
+  # failure this pair of drop-ins exists to prevent.
   - name: Restart k3s service
-    when: k3s_reservations.changed
+    when: k3s_reservations.changed or k3s_inhibit_delay.changed
     ansible.builtin.systemd:
       state: restarted
       name: k3s
+    register: k3s_restarted
+
+  # Everything below talks to the apiserver. Both the restart above and the
+  # get.k3s.io installer return before it is accepting connections, so without
+  # this the helm and k8s tasks race it and fail with connection refused or 401.
+  - name: Wait for the k3s apiserver to accept connections
+    ansible.builtin.wait_for:
+      host: 127.0.0.1
+      port: 6443
+      timeout: 300
+
+  - name: Wait for the k3s apiserver to report ready
+    ansible.builtin.command: k3s kubectl get --raw /readyz
+    register: k3s_readyz
+    until: k3s_readyz.rc == 0
+    retries: 30
+    delay: 5
+    changed_when: false
 
   - name: Ensure helm is installed
     block:
