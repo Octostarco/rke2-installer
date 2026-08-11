@@ -217,13 +217,41 @@
       kind: Namespace
       state: present
 
+  # qwen36 asks for 0.55 of the GPU and qwen35 for 0.50, so on a box that
+  # already runs qwen35 the new pod cannot fit until the old one is gone.
+  # The PVCs are deliberately left behind - dropping them would throw away the
+  # downloaded weights.
+  - name: Remove retired vLLM deployments
+    kubernetes.core.k8s:
+      state: absent
+      api_version: apps/v1
+      kind: Deployment
+      namespace: vllm
+      name: "{{ item }}"
+    loop:
+      - qwen3
+      - qwen35
+      - phi35
+
+  - name: Remove retired vLLM services
+    kubernetes.core.k8s:
+      state: absent
+      api_version: v1
+      kind: Service
+      namespace: vllm
+      name: "{{ item }}"
+    loop:
+      - qwen3
+      - qwen35
+      - phi35
+
   - name: Copy deployments files
     ansible.builtin.copy:
       # remote_src: true
       src: deployments/{{ item }}-deployment.yml
       dest: /root/{{ item }}-deployment.yml
     loop:
-      - qwen35
+      - qwen36
     register: deployment_file
 
   - ansible.builtin.debug:
@@ -234,6 +262,6 @@
       state: present
       src: /root/{{ item }}-deployment.yml
     loop:
-      - qwen35
+      - qwen36
 
   # In case you mess things up with the operator, refer to this: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/uninstall.html

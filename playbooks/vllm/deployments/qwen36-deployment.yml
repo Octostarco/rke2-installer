@@ -1,15 +1,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: qwen35
+  name: qwen36
   namespace: vllm
   labels:
-    app: qwen35
+    app: qwen36
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: qwen35
+      app: qwen36
   strategy:
     # Strategy is set to recreate so the old vLLM pod is killed before the new one starts
     # otherwise, some GPU contention problems arise that cause the new pod to keep crashing before the old pod is killed
@@ -17,56 +17,40 @@ spec:
   template:
     metadata:
       labels:
-        app: qwen35
+        app: qwen36
     spec:
       volumes:
       - name: cache-volume
         persistentVolumeClaim:
-          claimName: qwen35-pvc
-        # hostPath:
-        #   path: /model-cache
-      # vLLM needs to access the host's shared memory for tensor parallel inference.
+          claimName: qwen36-pvc
       - name: shm
         emptyDir:
           medium: Memory
           sizeLimit: "16Gi"
       initContainers:
       - name: ensure-model-download
-        image: vllm/vllm-openai:v0.18.0
+        image: vllm/vllm-openai:v0.19.1
         command: ["/bin/sh", "-c"]
-        args: ["stat /root/.cache/huggingface/qwen35 || python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"Qwen/Qwen3.5-35B-A3B-FP8\", local_dir=\"/root/.cache/huggingface/qwen35\")'"]
+        args: ["stat /root/.cache/huggingface/qwen36 || python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"Qwen/Qwen3.6-27B-FP8\", local_dir=\"/root/.cache/huggingface/qwen36\")'"]
         volumeMounts:
         - mountPath: /root/.cache/huggingface
           name: cache-volume
       containers:
       - name: qwen3
-        image: vllm/vllm-openai:v0.18.0
+        image: vllm/vllm-openai:v0.19.1
         command: ["/bin/sh", "-c"]
         args: [
-          "vllm serve /root/.cache/huggingface/qwen35 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.50 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 70000 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 16 --served-model-name qwen35 --tool-call-parser hermes --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8"
+          "vllm serve /root/.cache/huggingface/qwen36 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 131072 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 8 --served-model-name qwen36 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8"
         ]
         env:
           - name: HF_HUB_OFFLINE
             value: "1"
-        # env:
-        #- name: CUDA_VISIBLE_DEVICES                                                    
-        #  value: "1"
-        # - name: HUGGING_FACE_HUB_TOKEN
-        #   valueFrom:
-        #     secretKeyRef:
-        #       name: hf-token-secret
-        #       key: token
         ports:
         - containerPort: 8000
         resources:
-          # limits:
-          #   cpu: "10"
-          #   memory: 20G
-            # nvidia.com/gpu: "1"
           requests:
             cpu: "2"
             memory: 6G
-            # nvidia.com/gpu: "1"
         volumeMounts:
         - mountPath: /root/.cache/huggingface
           name: cache-volume
@@ -90,17 +74,17 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: qwen35
+  name: qwen36
   namespace: vllm
 spec:
   ports:
-  - name: http-qwen35
+  - name: http-qwen36
     port: 80
     protocol: TCP
     targetPort: 8000
   # The label selector should match the deployment labels & it is useful for prefix caching feature
   selector:
-    app: qwen35
+    app: qwen36
   sessionAffinity: None
   type: ClusterIP
 
@@ -109,7 +93,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: qwen35-pvc
+  name: qwen36-pvc
   namespace: vllm
 spec:
   accessModes:
