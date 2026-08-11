@@ -70,13 +70,21 @@
       ansible.builtin.shell: swapoff -a
       changed_when: false
 
-    # Use \s, not literal spaces: Ubuntu's installer (curtin) writes the swap
-    # entry tab-separated ("/swap.img\tnone\tswap\tsw\t0\t0"), so a literal
-    # " swap " never matches and swap silently comes back on the next reboot.
+    # Match on the fstype field rather than " swap " anywhere in the line.
+    # Ubuntu's installer (curtin) writes the entry tab-separated
+    # ("/swap.img\tnone\tswap\tsw\t0\t0"), so a literal " swap " never matched
+    # and swap silently came back on the next reboot; matching the field also
+    # avoids commenting out an unrelated entry mounted at e.g. /mnt/swap.
+    #
+    # The leading (?!\s*#) is what allows \s* inside the capture: without it an
+    # indented entry did not match at all, and with a plain [^#] an indented
+    # comment matched and got commented a second time.
+    #
+    # Keep this in step with the identical task in playbook.yml.
     - name: Comment out swap entries in fstab
       ansible.builtin.replace:
         path: /etc/fstab
-        regexp: '^([^#]\S*\s+\S+\s+swap\s+.*)$'
+        regexp: '^(?!\s*#)(\s*\S+\s+\S+\s+swap\s+.*)$'
         replace: '# \1'
 
     - name: Disable and stop ufw
