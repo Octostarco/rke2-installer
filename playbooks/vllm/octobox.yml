@@ -2,6 +2,27 @@
   hosts: "{{ target_host }}"
   gather_facts: true
   become: true
+  vars:
+    # Escape hatch for the reservation-flag check further down; see the comment
+    # on "Fail when the running k3s unit would shadow the reservations drop-in".
+    octobox_allow_stale_kubelet_flags: false
+
+    # This play was written for the bare-metal octoboxes. On EC2 two of its
+    # assumptions are wrong and one is actively harmful, so the affected tasks
+    # are gated on this. Autodetected from the SMBIOS vendor; override with
+    # -e octobox_is_ec2=true/false. Always compare with `| bool`: that override
+    # arrives as the bare string "false", which is truthy to Jinja, so a plain
+    # `when: octobox_is_ec2` would read it as true and do the opposite.
+    octobox_is_ec2: "{{ ansible_facts['system_vendor'] | default('') == 'Amazon EC2' }}"
+
+    # k3s advertises a fixed dummy0 address on bare metal so it is not confused
+    # when ethernet cards are switched. On EC2 the primary ENI IP is already
+    # stable across stop/start, so that problem does not exist - and 172.31.255.1
+    # sits inside the default VPC CIDR 172.31.0.0/16, where it can collide with a
+    # real instance address.
+    octobox_dummy0_ip: 172.31.255.1
+    k3s_advertise_address: >-
+      {{ ansible_default_ipv4.address if (octobox_is_ec2 | bool) else octobox_dummy0_ip }}
   tasks:
   - name: Get nvidia_keyring fact
     ansible.builtin.stat:
@@ -19,13 +40,13 @@
       name: unattended-upgrades
       state: absent
 
+  # network-manager is only here to create dummy0. Installing it on EC2 Ubuntu
+  # means NetworkManager takes over interfaces that netplan is managing, which
+  # is exactly the ENI disruption the dummy0 tasks below are skipped to avoid.
   - name: Install pip and nmcli
     ansible.builtin.apt:
       update_cache: yes
-      pkg:
-        - python3-pip
-        # for creating dummy network
-        - network-manager
+      pkg: "{{ ['python3-pip'] + ([] if (octobox_is_ec2 | bool) else ['network-manager']) }}"
 
   - name: Install pip dependencies for k8s ansible module
     ansible.builtin.pip:
@@ -39,7 +60,13 @@
   # - name: Create dummy loopback interface so k3s is not confused when switching ethernet cards
   #   ansible.builtin.shell: nmcli connection add type dummy ifname dummy0 ipv4.addresses 172.31.255.1/32 ipv4.method manual autoconnect yes
 
+  # The whole dummy0 dance is a bare-metal workaround: it gives k3s an address
+  # that survives swapping ethernet cards. EC2 does not have that problem (the
+  # primary ENI IP is stable across stop/start), and restarting NetworkManager
+  # there risks disturbing the netplan-managed ENI config - i.e. dropping the
+  # connection this play is running over.
   - name: Enable rule to manage dummy network interface
+    when: not (octobox_is_ec2 | bool)
     ansible.builtin.copy:
       dest: "/etc/NetworkManager/conf.d/90-manage-dummy0.conf"
       content: |
@@ -48,17 +75,20 @@
     register: nmcli_dummy0_managed
 
   - name: Restart NetworkManager
-    when: nmcli_dummy0_managed.changed
+    when:
+      - not (octobox_is_ec2 | bool)
+      - nmcli_dummy0_managed.changed
     ansible.builtin.systemd:
       state: restarted
       name: NetworkManager
 
   - name: Create dummy loopback interface so k3s is not confused when switching ethernet cards
+    when: not (octobox_is_ec2 | bool)
     community.general.nmcli:
       conn_name: dummy0
       ifname: dummy0
       type: dummy
-      ip4: 172.31.255.1/32
+      ip4: "{{ octobox_dummy0_ip }}/32"
       method4: manual
       state: present
       autoconnect: true
@@ -103,7 +133,12 @@
         - libnvidia-container-tools={{nvidia_toolkit_version }}
         - libnvidia-container1={{nvidia_toolkit_version }}
 
+  # Skipped on EC2: the Deep Learning AMI already ships a newer driver (595.71.05
+  # at time of writing, running real sm_120 compute), so installing 580 here is a
+  # downgrade. cuda-drivers-fabricmanager is for NVSwitch systems, which the
+  # g7e instances do not have.
   - name: Install k3s compatible drivers
+    when: not (octobox_is_ec2 | bool)
     vars:
       nvidia_driver_version: 580
     ansible.builtin.apt:
@@ -114,11 +149,67 @@
         - nvidia-headless-{{ nvidia_driver_version }}-server-open
         - nvidia-utils-{{ nvidia_driver_version }}-server
 
+  # Installing a driver does not reload the running kernel module, so a box that
+  # already had an older nvidia driver loaded keeps serving it until a reboot.
+  # Nothing above fails in that case: the device plugin and the vLLM pods come up
+  # into "Failed to initialize NVML: Driver/library version mismatch" while
+  # ansible-playbook exits 0. Surface it here rather than in CrashLoopBackOff.
+  - name: Check the nvidia driver is usable
+    ansible.builtin.command: nvidia-smi
+    register: nvidia_smi
+    changed_when: false
+    failed_when: false
+
+  - name: Fail when the nvidia driver is not usable
+    when: nvidia_smi.rc != 0
+    ansible.builtin.fail:
+      msg: >-
+        nvidia-smi exited {{ nvidia_smi.rc }}:
+        {{ (nvidia_smi.stderr | default('', true) or nvidia_smi.stdout | default('', true)) | trim }}
+        This host most likely needs a reboot for the installed driver to load.
+        GPU workloads applied now would fail with NVML initialisation errors.
+
   - name: Install k3s
     when: ansible_facts.services['k3s.service']['status'] | default('not-found') == 'not-found'
     # TODO: disable traefik at startup
-    ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia --advertise-address 172.31.255.1" sh -
+    ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia --advertise-address {{ k3s_advertise_address | trim }}" sh -
     # ansible.builtin.shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --default-runtime=nvidia" sh -
+
+  # The guard above means an already-provisioned box never gets its unit file
+  # rewritten, so boxes installed before ba11344 still carry the reservations
+  # that INSTALL_K3S_EXEC used to pass as flags (467c3d9):
+  #   --kubelet-arg='system-reserved=cpu=6,memory=26Gi'
+  #   --kubelet-arg='kube-reserved=cpu=1,memory=2Gi'
+  # Kubelet command-line flags beat the equivalent fields of a
+  # KubeletConfiguration drop-in, so on exactly the hosts already in production
+  # systemReserved/kubeReserved in 90-k3s-reservations.conf below are shadowed:
+  # a later change to those values reports changed, restarts k3s, and has no
+  # effect. Precedence is per-field, so maxPods and shutdownGracePeriod - never
+  # passed as flags on the octoboxes - do still apply.
+  #
+  # Stop rather than rewrite the unit: clearing the flags means regenerating
+  # ExecStart, which is the installer's job and restarts the cluster, so it
+  # should be a deliberate act. Re-run the k3s installer with the current
+  # INSTALL_K3S_EXEC to clear them, or set the override to proceed knowingly.
+  - name: Check the k3s unit for reservation flags that shadow the drop-in
+    when: ansible_facts.services['k3s.service'] is defined
+    ansible.builtin.command: grep -c -- "--kubelet-arg=.*-reserved=" /etc/systemd/system/k3s.service
+    register: k3s_stale_flags
+    changed_when: false
+    failed_when: false
+
+  - name: Fail when the running k3s unit would shadow the reservations drop-in
+    when:
+      - not octobox_allow_stale_kubelet_flags
+      - (k3s_stale_flags.stdout | default('0') | int) > 0
+    ansible.builtin.fail:
+      msg: >-
+        /etc/systemd/system/k3s.service still passes system-reserved/kube-reserved
+        as --kubelet-arg flags, which override systemReserved/kubeReserved in
+        90-k3s-reservations.conf - editing that file would silently do nothing.
+        Re-run the k3s installer on this host with the INSTALL_K3S_EXEC from the
+        "Install k3s" task above (this restarts k3s), or re-run this play with
+        -e octobox_allow_stale_kubelet_flags=true to continue anyway.
 
   # systemd only honours the kubelet's shutdown inhibitor lock for up to
   # InhibitDelayMaxSec, so shutdownGracePeriod below is capped by this. If the
@@ -180,11 +271,35 @@
         shutdownGracePeriodCriticalPods: 30s
     register: k3s_reservations
 
+  # The inhibit-delay drop-in has to be in this condition too. The kubelet reads
+  # CurrentInhibitDelay from logind once, at start, so on a box provisioned by
+  # ba11344 - where only the logind file changes on a re-run - restarting logind
+  # alone never reaches the running kubelet and graceful shutdown stays off. The
+  # next reboot then still SIGKILLs pods with no drain, which is the whole
+  # failure this pair of drop-ins exists to prevent.
   - name: Restart k3s service
-    when: k3s_reservations.changed
+    when: k3s_reservations.changed or k3s_inhibit_delay.changed
     ansible.builtin.systemd:
       state: restarted
       name: k3s
+    register: k3s_restarted
+
+  # Everything below talks to the apiserver. Both the restart above and the
+  # get.k3s.io installer return before it is accepting connections, so without
+  # this the helm and k8s tasks race it and fail with connection refused or 401.
+  - name: Wait for the k3s apiserver to accept connections
+    ansible.builtin.wait_for:
+      host: 127.0.0.1
+      port: 6443
+      timeout: 300
+
+  - name: Wait for the k3s apiserver to report ready
+    ansible.builtin.command: k3s kubectl get --raw /readyz
+    register: k3s_readyz
+    until: k3s_readyz.rc == 0
+    retries: 30
+    delay: 5
+    changed_when: false
 
   - name: Ensure helm is installed
     block:

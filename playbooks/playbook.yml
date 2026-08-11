@@ -91,10 +91,15 @@
       shell: |
         swapoff -a
 
+    # Keep this in step with the identical task in infra-setup.yml, which
+    # carries the full explanation. In short: match the fstype field, tolerate
+    # tabs and indentation, and never re-comment an already-commented line.
+    # This copy additionally required the options field to be exactly "sw",
+    # which misses entries using any other mount options.
     - name: Disable SWAP in fstab
       replace:
         path: /etc/fstab
-        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        regexp: '^(?!\s*#)(\s*\S+\s+\S+\s+swap\s+.*)$'
         replace: '# \1'
 
     - name: Set a hostname {{ inventory_hostname }}
