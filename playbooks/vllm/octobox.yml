@@ -2,6 +2,9 @@
   hosts: "{{ target_host }}"
   gather_facts: true
   become: true
+  vars:
+    vllm_expose: false
+    vllm_node_port: 30035
   tasks:
   - name: Get nvidia_keyring fact
     ansible.builtin.stat:
@@ -283,9 +286,8 @@
       - phi35
 
   - name: Copy deployments files
-    ansible.builtin.copy:
-      # remote_src: true
-      src: deployments/{{ item }}-deployment.yml
+    ansible.builtin.template:
+      src: deployments/{{ item }}-deployment.yml.j2
       dest: /root/{{ item }}-deployment.yml
     loop:
       - qwen36
