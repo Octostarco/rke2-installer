@@ -1,27 +1,29 @@
+# Qwen3.8-27B (dense, FP8)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: qwen36
+  name: qwen3827
   namespace: vllm
   labels:
-    app: qwen36
+    app: qwen3827
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: qwen36
+      app: qwen3827
   strategy:
+    # Recreate so the old vLLM pod releases the GPUs before the new one starts.
     type: Recreate
   template:
     metadata:
       labels:
-        app: qwen36
+        app: qwen3827
     spec:
       volumes:
       - name: cache-volume
         persistentVolumeClaim:
-          claimName: qwen36-pvc
-      # vLLM needs to access the host's shared memory for tensor parallel inference.
+          claimName: qwen3827-pvc
+      # vLLM needs the host's shared memory for tensor parallel inference.
       - name: shm
         emptyDir:
           medium: Memory
@@ -40,13 +42,13 @@ spec:
         args:
         - |
           set -e
-          if [ -f /root/.cache/huggingface/qwen36/.download-complete ]; then
+          if [ -f /root/.cache/huggingface/qwen3827/.download-complete ]; then
             echo "model already present, skipping download"
             exit 0
           fi
-          rm -rf /root/.cache/huggingface/qwen36
-          python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="Qwen/Qwen3.6-27B-FP8", local_dir="/root/.cache/huggingface/qwen36")'
-          touch /root/.cache/huggingface/qwen36/.download-complete
+          rm -rf /root/.cache/huggingface/qwen3827
+          python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="Qwen/Qwen3.8-27B-FP8", local_dir="/root/.cache/huggingface/qwen3827")'
+          touch /root/.cache/huggingface/qwen3827/.download-complete
         volumeMounts:
         - mountPath: /root/.cache/huggingface
           name: cache-volume
@@ -54,9 +56,9 @@ spec:
       - name: qwen3
         image: vllm/vllm-openai:v0.28.0
         command: ["/bin/sh", "-c"]
-        # 0.55 coexists with the platform's other GPU services; KV fits 8 full 262k seqs.
+        # 0.55 coexists with the platform's other GPU services (~35 GiB/GPU); KV fits 8 full 262k seqs.
         args: [
-          "vllm serve /root/.cache/huggingface/qwen36 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 262144 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 8 --served-model-name qwen36 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8"
+          "vllm serve /root/.cache/huggingface/qwen3827 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 262144 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 8 --served-model-name qwen3827 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8 --default-chat-template-kwargs '{\"reasoning_effort\": \"medium\"}'"
         ]
         env:
           - name: HF_HUB_OFFLINE
@@ -64,12 +66,9 @@ spec:
         ports:
         - containerPort: 8000
         resources:
-            # memory: 20G
-            # nvidia.com/gpu: "1"
           requests:
             cpu: "2"
             memory: 6G
-            # nvidia.com/gpu: "1"
         volumeMounts:
         - mountPath: /root/.cache/huggingface
           name: cache-volume
@@ -79,7 +78,7 @@ spec:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 3600
+          initialDelaySeconds: 1800
           periodSeconds: 10
         readinessProbe:
           httpGet:
@@ -93,23 +92,23 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: qwen36
+  name: qwen3827
   namespace: vllm
 spec:
   ports:
-  - name: http-qwen36
+  - name: http-qwen3827
     port: 80
     protocol: TCP
     targetPort: 8000
 {% if vllm_expose | default(false) | bool %}
-    nodePort: {{ vllm_node_port | default(30036) }}
+    nodePort: {{ vllm_node_port | default(30040) }}
   type: NodePort
 {% else %}
   type: ClusterIP
 {% endif %}
   # The label selector should match the deployment labels & it is useful for prefix caching feature
   selector:
-    app: qwen36
+    app: qwen3827
   sessionAffinity: None
 
 ---
@@ -117,12 +116,12 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: qwen36-pvc
+  name: qwen3827-pvc
   namespace: vllm
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 100Gi
+      storage: 60Gi
   storageClassName: local-path

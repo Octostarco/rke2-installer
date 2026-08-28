@@ -5,6 +5,12 @@
   vars:
     vllm_expose: false
     vllm_node_port: 30035
+    # Model served by this box: qwen36 (Qwen3.6-27B), qwen3635 (Qwen3.6-35B-A3B MoE) or qwen3827 (Qwen3.8-27B).
+    vllm_model: qwen36
+    vllm_models:
+      - qwen36
+      - qwen3635
+      - qwen3827
   tasks:
   - name: Get nvidia_keyring fact
     ansible.builtin.stat:
@@ -34,7 +40,8 @@
     ansible.builtin.pip:
       break_system_packages: true
       name:
-        - kubernetes
+        # 36+ requires pyyaml>=6.0.3, which pip cannot upgrade over Ubuntu 24.04's dpkg-owned 6.0.1
+        - kubernetes==35.0.0
         - pyyaml
         - jsonpatch
 
@@ -69,8 +76,6 @@
   # - name: Check dummy network
   #   ansible.builtin.pause:
   #     prompt: "Check dummy network"
-
-  # TODO: add label '"nvidia.com/gpu.present: "true"' to node, so nvidia device plugin daemonset gets scheduled there
 
   # Both tasks below build their destination via a pipe/redirect, so they write
   # to a temporary file first and only move it into place once the whole
@@ -246,17 +251,12 @@
       kind: Namespace
       state: present
 
-  # qwen36 asks for 0.55 of the GPU and qwen35 for 0.50, so on a box that
-  # already runs qwen35 the new pod cannot fit until the old one is gone.
-  # The PVCs are deliberately left behind - dropping them would throw away the
-  # downloaded weights.
-  #
-  # Foreground propagation + wait is what makes this correct: without it the
-  # module returns as soon as the API server accepts the delete, qwen36 is
-  # applied while the old vLLM process still holds its share of the GPU, and
-  # the new pod CUDA-OOMs into CrashLoopBackOff - exactly the contention this
-  # task exists to avoid. Foreground keeps the Deployment object around until
-  # its ReplicaSets and Pods are actually gone.
+  - name: Validate vllm_model
+    ansible.builtin.assert:
+      that: vllm_model in vllm_models
+      fail_msg: "vllm_model must be one of {{ vllm_models | join(', ') }}"
+
+  # Non-selected models are removed (PVCs are kept, so switching back is fast).
   - name: Remove retired vLLM deployments
     kubernetes.core.k8s:
       state: absent
@@ -268,10 +268,7 @@
       wait_timeout: 300
       delete_options:
         propagationPolicy: Foreground
-    loop:
-      - qwen3
-      - qwen35
-      - phi35
+    loop: "{{ (vllm_models | difference([vllm_model])) + ['qwen3', 'qwen35', 'phi35'] }}"
 
   - name: Remove retired vLLM services
     kubernetes.core.k8s:
@@ -280,23 +277,20 @@
       kind: Service
       namespace: vllm
       name: "{{ item }}"
-    loop:
-      - qwen3
-      - qwen35
-      - phi35
+    loop: "{{ (vllm_models | difference([vllm_model])) + ['qwen3', 'qwen35', 'phi35'] }}"
 
   - name: Copy deployments files
     ansible.builtin.template:
       src: deployments/{{ item }}-deployment.yml.j2
       dest: /root/{{ item }}-deployment.yml
     loop:
-      - qwen36
+      - "{{ vllm_model }}"
 
   - name: Apply k8s deployments
     kubernetes.core.k8s:
       state: present
       src: /root/{{ item }}-deployment.yml
     loop:
-      - qwen36
+      - "{{ vllm_model }}"
 
   # In case you mess things up with the operator, refer to this: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/uninstall.html
