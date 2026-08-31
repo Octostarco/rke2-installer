@@ -11,8 +11,6 @@ spec:
     matchLabels:
       app: qwen36
   strategy:
-    # Strategy is set to recreate so the old vLLM pod is killed before the new one starts
-    # otherwise, some GPU contention problems arise that cause the new pod to keep crashing before the old pod is killed
     type: Recreate
   template:
     metadata:
@@ -23,21 +21,22 @@ spec:
       - name: cache-volume
         persistentVolumeClaim:
           claimName: qwen36-pvc
+      # vLLM needs to access the host's shared memory for tensor parallel inference.
       - name: shm
         emptyDir:
           medium: Memory
           sizeLimit: "16Gi"
       initContainers:
-      # The guard keys off a sentinel written only after snapshot_download
-      # returns, not off the model directory itself: snapshot_download creates
-      # that directory up front, so an interrupted download (reboot, eviction,
-      # network blip) would otherwise look like a finished one on the next
-      # start. The main container runs with HF_HUB_OFFLINE=1 and could never
-      # repair it, leaving the pod in CrashLoopBackOff until the PVC is wiped
-      # by hand.
       - name: ensure-model-download
-        image: vllm/vllm-openai:v0.19.1
+        image: vllm/vllm-openai:v0.28.0
         command: ["/bin/sh", "-c"]
+        # The guard keys off a sentinel written only after snapshot_download
+        # returns, not off the model directory itself: snapshot_download creates
+        # that directory up front, so an interrupted download (reboot, eviction,
+        # network blip) would otherwise look like a finished one on the next
+        # start. The main container runs with HF_HUB_OFFLINE=1 and could never
+        # repair it, leaving the pod in CrashLoopBackOff until the PVC is wiped
+        # by hand.
         args:
         - |
           set -e
@@ -53,10 +52,11 @@ spec:
           name: cache-volume
       containers:
       - name: qwen3
-        image: vllm/vllm-openai:v0.19.1
+        image: vllm/vllm-openai:v0.28.0
         command: ["/bin/sh", "-c"]
+        # 0.55 coexists with the platform's other GPU services; KV fits 8 full 262k seqs.
         args: [
-          "vllm serve /root/.cache/huggingface/qwen36 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 131072 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 8 --served-model-name qwen36 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8"
+          "vllm serve /root/.cache/huggingface/qwen36 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 262144 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 8 --served-model-name qwen36 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8"
         ]
         env:
           - name: HF_HUB_OFFLINE
@@ -64,9 +64,12 @@ spec:
         ports:
         - containerPort: 8000
         resources:
+            # memory: 20G
+            # nvidia.com/gpu: "1"
           requests:
             cpu: "2"
             memory: 6G
+            # nvidia.com/gpu: "1"
         volumeMounts:
         - mountPath: /root/.cache/huggingface
           name: cache-volume
@@ -98,11 +101,16 @@ spec:
     port: 80
     protocol: TCP
     targetPort: 8000
+{% if vllm_expose | default(false) | bool %}
+    nodePort: {{ vllm_node_port | default(30036) }}
+  type: NodePort
+{% else %}
+  type: ClusterIP
+{% endif %}
   # The label selector should match the deployment labels & it is useful for prefix caching feature
   selector:
     app: qwen36
   sessionAffinity: None
-  type: ClusterIP
 
 ---
 
