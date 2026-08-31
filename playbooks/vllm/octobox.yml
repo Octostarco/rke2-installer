@@ -28,6 +28,31 @@
       name: unattended-upgrades
       state: absent
 
+  # Same kernel limits the rke2 playbook applies (playbooks/playbook.yml): container
+  # runtimes and watch-heavy workloads exhaust the stock inotify/nofile defaults.
+  - name: Set kernel limits for kubernetes workloads
+    ansible.posix.sysctl:
+      name: "{{ item.name }}"
+      value: "{{ item.value }}"
+      sysctl_file: /etc/sysctl.d/99-octostar.conf
+      sysctl_set: yes
+      state: present
+      reload: yes
+    loop:
+      - { name: fs.inotify.max_user_instances, value: '100000' }
+      - { name: fs.inotify.max_user_watches, value: '1003986' }
+      - { name: vm.max_map_count, value: '262144' }
+
+  - name: Raise nofile limits
+    community.general.pam_limits:
+      domain: '*'
+      limit_type: "{{ item }}"
+      limit_item: nofile
+      value: 1000000
+    loop:
+      - hard
+      - soft
+
   - name: Install pip and nmcli
     ansible.builtin.apt:
       update_cache: yes
