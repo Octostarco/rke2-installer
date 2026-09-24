@@ -34,9 +34,18 @@
     rke2_cni:
       - cilium
 
-    # Raise the max schedulable pods per node from the RKE2 default (~110) to 200
+    # Raise the max schedulable pods per node from the RKE2 default (~110) to 200.
+    #
+    # Image GC starts at 70% disk use and frees down to 60%. The kubelet default
+    # (85% -> 80%) parks a node between 15% and 20% free with reclaimable image
+    # cache, which sits permanently inside the Octostar node-filesystem warning
+    # (20% free) on nodes that pull a new image per PR. Set as flags because
+    # flags override both the kubelet config file and RKE2's kubelet.conf.d
+    # drop-in.
     rke2_kubelet_arg:
       - "--max-pods=200"
+      - "--image-gc-high-threshold=70"
+      - "--image-gc-low-threshold=60"
 
     rke2_server_options:
       - "embedded-registry: true"
