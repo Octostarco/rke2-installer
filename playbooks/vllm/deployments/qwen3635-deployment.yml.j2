@@ -1,0 +1,127 @@
+# Qwen3.6-35B-A3B (MoE, FP8)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3635
+  namespace: vllm
+  labels:
+    app: qwen3635
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen3635
+  strategy:
+    # Recreate so the old vLLM pod releases the GPUs before the new one starts.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: qwen3635
+    spec:
+      volumes:
+      - name: cache-volume
+        persistentVolumeClaim:
+          claimName: qwen3635-pvc
+      # vLLM needs the host's shared memory for tensor parallel inference.
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "16Gi"
+      initContainers:
+      - name: ensure-model-download
+        image: vllm/vllm-openai:v0.28.0
+        command: ["/bin/sh", "-c"]
+        # The guard keys off a sentinel written only after snapshot_download
+        # returns, not off the model directory itself: snapshot_download creates
+        # that directory up front, so an interrupted download (reboot, eviction,
+        # network blip) would otherwise look like a finished one on the next
+        # start. The main container runs with HF_HUB_OFFLINE=1 and could never
+        # repair it, leaving the pod in CrashLoopBackOff until the PVC is wiped
+        # by hand.
+        args:
+        - |
+          set -e
+          if [ -f /root/.cache/huggingface/qwen3635/.download-complete ]; then
+            echo "model already present, skipping download"
+            exit 0
+          fi
+          rm -rf /root/.cache/huggingface/qwen3635
+          python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="Qwen/Qwen3.6-35B-A3B-FP8", local_dir="/root/.cache/huggingface/qwen3635")'
+          touch /root/.cache/huggingface/qwen3635/.download-complete
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: cache-volume
+      containers:
+      - name: qwen3635
+        image: vllm/vllm-openai:v0.28.0
+        command: ["/bin/sh", "-c"]
+        # 0.55 coexists with the platform's other GPU services; MoE KV ~10 KiB/token. msn 32 exceeds the 24.77x full-262k guarantee slightly (graceful recompute-preemption in the tail) but covers the measured agentic sweet spot at c32.
+        args: [
+          "vllm serve /root/.cache/huggingface/qwen3635 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 262144 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 32 --served-model-name qwen3635 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8 --default-chat-template-kwargs '{\"reasoning_effort\": \"medium\"}'"
+        ]
+        env:
+          - name: HF_HUB_OFFLINE
+            value: "1"
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            cpu: "2"
+            memory: 6G
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: cache-volume
+        - name: shm
+          mountPath: /dev/shm
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 1800
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 5
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3635
+  namespace: vllm
+spec:
+  ports:
+  - name: http-qwen3635
+    port: 80
+    protocol: TCP
+    targetPort: 8000
+{% if vllm_expose | default(false) | bool %}
+    nodePort: {{ vllm_node_port | default(30040) }}
+  type: NodePort
+{% else %}
+  type: ClusterIP
+{% endif %}
+  # The label selector should match the deployment labels & it is useful for prefix caching feature
+  selector:
+    app: qwen3635
+  sessionAffinity: None
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen3635-pvc
+  namespace: vllm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 80Gi
+  storageClassName: local-path
