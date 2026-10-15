@@ -56,9 +56,9 @@ spec:
       - name: qwen3
         image: vllm/vllm-openai:v0.29.0
         command: ["/bin/sh", "-c"]
-        # 0.55 coexists with the platform's other GPU services (~35 GiB/GPU); KV fits 8 full 262k seqs.
+        # 0.55 coexists with the platform's other GPU services (~35 GiB/GPU); KV fits 8 full 262k seqs. msn 16 exceeds that guarantee (most requests are far shorter; no preemptions on octobox03), and the long-prefill threshold caps a giant prompt's prefill per step so short requests are not queued behind it.
         args: [
-          "vllm serve /root/.cache/huggingface/qwen3827 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 262144 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 8 --served-model-name qwen3827 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8 --default-chat-template-kwargs '{\"reasoning_effort\": \"medium\"}'"
+          "vllm serve /root/.cache/huggingface/qwen3827 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 262144 --enable-chunked-prefill --long-prefill-token-threshold 2048 --max-num-batched-tokens 8192 --max-num-seqs 16 --served-model-name qwen3827 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8 --default-chat-template-kwargs '{\"reasoning_effort\": \"medium\"}'"
         ]
         env:
           - name: HF_HUB_OFFLINE
