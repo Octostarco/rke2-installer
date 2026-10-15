@@ -30,7 +30,7 @@ spec:
           sizeLimit: "16Gi"
       initContainers:
       - name: ensure-model-download
-        image: vllm/vllm-openai:v0.28.0
+        image: vllm/vllm-openai:v0.29.0
         command: ["/bin/sh", "-c"]
         # The guard keys off a sentinel written only after snapshot_download
         # returns, not off the model directory itself: snapshot_download creates
@@ -54,7 +54,7 @@ spec:
           name: cache-volume
       containers:
       - name: qwen3
-        image: vllm/vllm-openai:v0.28.0
+        image: vllm/vllm-openai:v0.29.0
         command: ["/bin/sh", "-c"]
         # 0.55 coexists with the platform's other GPU services (~35 GiB/GPU); KV fits 8 full 262k seqs.
         args: [
