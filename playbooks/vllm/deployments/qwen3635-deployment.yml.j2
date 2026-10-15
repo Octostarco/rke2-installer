@@ -58,7 +58,7 @@ spec:
         command: ["/bin/sh", "-c"]
         # 0.55 coexists with the platform's other GPU services; MoE KV ~10 KiB/token. msn 32 exceeds the 24.77x full-262k guarantee slightly (graceful recompute-preemption in the tail) but covers the measured agentic sweet spot at c32.
         args: [
-          "vllm serve /root/.cache/huggingface/qwen3635 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 262144 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 32 --served-model-name qwen3635 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8 --default-chat-template-kwargs '{\"reasoning_effort\": \"medium\"}'"
+          "vllm serve /root/.cache/huggingface/qwen3635 --host 0.0.0.0 --port 8000 --download-dir /root/.cache/huggingface --gpu-memory-utilization 0.55 --dtype auto --reasoning-parser qwen3 --tensor-parallel-size 2 --max-model-len 262144 --enable-chunked-prefill --max-num-batched-tokens 8192 --max-num-seqs 32 --served-model-name qwen3635 --tool-call-parser qwen3_coder --enable-auto-tool-choice --chat-template-content-format openai --kv-cache-dtype fp8"
         ]
         env:
           - name: HF_HUB_OFFLINE

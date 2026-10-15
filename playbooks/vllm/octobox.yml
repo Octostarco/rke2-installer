@@ -6,7 +6,7 @@
     vllm_expose: false
     vllm_node_port: 30035
     # Model served by this box: qwen36 (Qwen3.6-27B), qwen3635 (Qwen3.6-35B-A3B MoE) or qwen3827 (Qwen3.8-27B).
-    vllm_model: qwen36
+    vllm_model: qwen3827
     vllm_models:
       - qwen36
       - qwen3635
@@ -261,6 +261,11 @@
   #       --version 0.17.1
   #   changed_when: does not exist
 
+  # TODO(rke2 switch): the chart's default affinity requires the node label
+  # nvidia.com/gpu.present=true (no NFD on octoboxes), so this daemonset never
+  # schedules and pods requesting nvidia.com/gpu resources stay Pending.
+  # Harmless today (no template requests GPU resources; containers reach the
+  # cards via --default-runtime=nvidia); fix properly with the rke2 migration.
   - name: Install k8s-device-plugin helmchart
     kubernetes.core.helm:
       name: nvdp
