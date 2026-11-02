@@ -151,6 +151,13 @@
         - libnvidia-container-tools={{ nvidia_toolkit_version }}
         - libnvidia-container1={{ nvidia_toolkit_version }}
 
+  - name: Read the installed nvidia-container-toolkit version
+    ansible.builtin.command:
+      argv: [dpkg-query, -W, "-f=${Version}", nvidia-container-toolkit]
+      expand_argument_vars: false
+    register: nvidia_toolkit_installed
+    changed_when: false
+
   # A missing config file means the runtime's defaults, which are the values
   # asserted below.
   - name: Read the nvidia-container-runtime settings
@@ -172,24 +179,28 @@
     register: nvidia_runtime_settings
     changed_when: false
 
-  # Any mode other than auto, legacy in particular, loses the GPU in
-  # unprivileged pods on the next daemon-reload (see the toolkit task above).
-  # Pods claim GPUs only through NVIDIA_VISIBLE_DEVICES, which the runtime
-  # ignores in unprivileged containers unless
-  # accept-nvidia-visible-devices-envvar-when-unprivileged is true.
+  # Mode auto keeps the GPU across a daemon-reload only on toolkit 1.18+,
+  # where it resolves to just-in-time CDI; on older releases the config still
+  # reads auto but resolves to legacy (see the toolkit task above), so the
+  # version is checked as well as the mode. Pods claim GPUs only through
+  # NVIDIA_VISIBLE_DEVICES, which the runtime ignores in unprivileged
+  # containers unless accept-nvidia-visible-devices-envvar-when-unprivileged
+  # is true.
   - name: Assert the nvidia-container-runtime settings
     vars:
       nvidia_runtime: "{{ nvidia_runtime_settings.stdout | from_json }}"
     ansible.builtin.assert:
       that:
+        - nvidia_toolkit_installed.stdout is version('1.18', '>=')
         - nvidia_runtime.mode == 'auto'
         - nvidia_runtime.accept_envvar is sameas true
       fail_msg: >-
+        nvidia-container-toolkit is {{ nvidia_toolkit_installed.stdout }} and
         /etc/nvidia-container-runtime/config.toml has [nvidia-container-runtime]
         mode "{{ nvidia_runtime.mode }}" and
         accept-nvidia-visible-devices-envvar-when-unprivileged
-        {{ nvidia_runtime.accept_envvar }}; they must be "auto" (or unset) and
-        true (or unset).
+        {{ nvidia_runtime.accept_envvar }}; they must be 1.18 or later, "auto"
+        (or unset) and true (or unset).
 
   - name: Install k3s compatible drivers
     vars:
