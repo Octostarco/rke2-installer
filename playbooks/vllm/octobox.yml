@@ -151,26 +151,45 @@
         - libnvidia-container-tools={{ nvidia_toolkit_version }}
         - libnvidia-container1={{ nvidia_toolkit_version }}
 
-  - name: Read the nvidia-container-runtime mode
+  # A missing config file means the runtime's defaults, which are the values
+  # asserted below.
+  - name: Read the nvidia-container-runtime settings
     ansible.builtin.command:
       argv:
         - python3
         - -c
         - |
-          import tomllib
-          with open("/etc/nvidia-container-runtime/config.toml", "rb") as f:
-              print(tomllib.load(f).get("nvidia-container-runtime", {}).get("mode", ""))
-    register: nvidia_runtime_mode
+          import json, tomllib
+          try:
+              with open("/etc/nvidia-container-runtime/config.toml", "rb") as f:
+                  cfg = tomllib.load(f)
+          except FileNotFoundError:
+              cfg = {}
+          print(json.dumps({
+              "mode": cfg.get("nvidia-container-runtime", {}).get("mode", "auto"),
+              "accept_envvar": cfg.get("accept-nvidia-visible-devices-envvar-when-unprivileged", True),
+          }))
+    register: nvidia_runtime_settings
     changed_when: false
 
-  # Any other mode, legacy in particular, loses the GPU in unprivileged pods on
-  # the next daemon-reload (see the toolkit task above).
-  - name: Assert the nvidia-container-runtime mode is auto
+  # Any mode other than auto, legacy in particular, loses the GPU in
+  # unprivileged pods on the next daemon-reload (see the toolkit task above).
+  # Pods claim GPUs only through NVIDIA_VISIBLE_DEVICES, which the runtime
+  # ignores in unprivileged containers unless
+  # accept-nvidia-visible-devices-envvar-when-unprivileged is true.
+  - name: Assert the nvidia-container-runtime settings
+    vars:
+      nvidia_runtime: "{{ nvidia_runtime_settings.stdout | from_json }}"
     ansible.builtin.assert:
-      that: nvidia_runtime_mode.stdout | trim in ['', 'auto']
+      that:
+        - nvidia_runtime.mode == 'auto'
+        - nvidia_runtime.accept_envvar is sameas true
       fail_msg: >-
-        [nvidia-container-runtime] mode in /etc/nvidia-container-runtime/config.toml
-        is "{{ nvidia_runtime_mode.stdout | trim }}"; it must be "auto" or unset.
+        /etc/nvidia-container-runtime/config.toml has [nvidia-container-runtime]
+        mode "{{ nvidia_runtime.mode }}" and
+        accept-nvidia-visible-devices-envvar-when-unprivileged
+        {{ nvidia_runtime.accept_envvar }}; they must be "auto" (or unset) and
+        true (or unset).
 
   - name: Install k3s compatible drivers
     vars:
