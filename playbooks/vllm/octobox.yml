@@ -125,16 +125,52 @@
       executable: /bin/bash
 
   # https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#next-steps
+  #
+  # Pods get the GPU through NVIDIA_VISIBLE_DEVICES with nvidia as k3s's
+  # default runtime, under cgroup v2 with SystemdCgroup. On these boxes toolkit
+  # 1.18+ resolves mode "auto" to just-in-time CDI: the device nodes are in the
+  # OCI spec and in the pod scope's DeviceAllow, so a `systemctl daemon-reload`
+  # (which any apt upgrade of a package shipping a unit triggers) leaves them
+  # alone. Toolkit 1.17 resolves "auto" to legacy mode, which grants the devices
+  # outside that cgroup, so every unprivileged GPU pod loses the GPU at the next
+  # reload.
+  #
+  # The version is an exact pin, and allow_downgrade lets a box on a newer
+  # release converge back to it. Installing over a different version reloads
+  # systemd itself (the packages ship units), so GPU pods started under a
+  # legacy-mode toolkit lose the GPU at that point and need a restart.
   - name: Install nvidia container runtime (toolkit)
     vars:
-      nvidia_toolkit_version: 1.17.8-1
+      nvidia_toolkit_version: 1.19.1-1
     ansible.builtin.apt:
       update_cache: yes
+      allow_downgrade: true
       pkg:
-        - nvidia-container-toolkit={{nvidia_toolkit_version }}
-        - nvidia-container-toolkit-base={{nvidia_toolkit_version }}
-        - libnvidia-container-tools={{nvidia_toolkit_version }}
-        - libnvidia-container1={{nvidia_toolkit_version }}
+        - nvidia-container-toolkit={{ nvidia_toolkit_version }}
+        - nvidia-container-toolkit-base={{ nvidia_toolkit_version }}
+        - libnvidia-container-tools={{ nvidia_toolkit_version }}
+        - libnvidia-container1={{ nvidia_toolkit_version }}
+
+  - name: Read the nvidia-container-runtime mode
+    ansible.builtin.command:
+      argv:
+        - python3
+        - -c
+        - |
+          import tomllib
+          with open("/etc/nvidia-container-runtime/config.toml", "rb") as f:
+              print(tomllib.load(f).get("nvidia-container-runtime", {}).get("mode", ""))
+    register: nvidia_runtime_mode
+    changed_when: false
+
+  # Any other mode, legacy in particular, loses the GPU in unprivileged pods on
+  # the next daemon-reload (see the toolkit task above).
+  - name: Assert the nvidia-container-runtime mode is auto
+    ansible.builtin.assert:
+      that: nvidia_runtime_mode.stdout | trim in ['', 'auto']
+      fail_msg: >-
+        [nvidia-container-runtime] mode in /etc/nvidia-container-runtime/config.toml
+        is "{{ nvidia_runtime_mode.stdout | trim }}"; it must be "auto" or unset.
 
   - name: Install k3s compatible drivers
     vars:
@@ -261,11 +297,14 @@
   #       --version 0.17.1
   #   changed_when: does not exist
 
-  # TODO(rke2 switch): the chart's default affinity requires the node label
-  # nvidia.com/gpu.present=true (no NFD on octoboxes), so this daemonset never
-  # schedules and pods requesting nvidia.com/gpu resources stay Pending.
-  # Harmless today (no template requests GPU resources; containers reach the
-  # cards via --default-runtime=nvidia); fix properly with the rke2 migration.
+  # The chart's default node affinity matches only nodes labelled
+  # nvidia.com/gpu.present=true or carrying NFD's NVIDIA PCI/CPU labels. This
+  # playbook sets neither, so the daemonset runs only where the label was added
+  # by hand or a GPU operator's NFD is installed; elsewhere it has no pods, the
+  # node advertises no nvidia.com/gpu, and a pod requesting it stays Pending.
+  # No template requests nvidia.com/gpu: containers reach the GPUs through
+  # NVIDIA_VISIBLE_DEVICES and the default nvidia runtime, with or without the
+  # plugin.
   - name: Install k8s-device-plugin helmchart
     kubernetes.core.helm:
       name: nvdp
