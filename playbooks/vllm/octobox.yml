@@ -1,16 +1,11 @@
-- name: Setup vLLM and dependencies
+# Prepares an octobox for GPU workloads: NVIDIA drivers and container toolkit,
+# k3s with the nvidia runtime as its default, and the NVIDIA device plugin.
+# vLLM itself is deployed by octostar-singlenode (vllm.profile in its
+# local-env.yaml), not by this playbook.
+- name: Set up an octobox GPU node
   hosts: "{{ target_host }}"
   gather_facts: true
   become: true
-  vars:
-    vllm_expose: false
-    vllm_node_port: 30035
-    # Model served by this box: qwen36 (Qwen3.6-27B), qwen3635 (Qwen3.6-35B-A3B MoE) or qwen3827 (Qwen3.8-27B).
-    vllm_model: qwen3827
-    vllm_models:
-      - qwen36
-      - qwen3635
-      - qwen3827
   tasks:
   - name: Get nvidia_keyring fact
     ansible.builtin.stat:
@@ -332,9 +327,9 @@
   # playbook sets neither, so the daemonset runs only where the label was added
   # by hand or a GPU operator's NFD is installed; elsewhere it has no pods, the
   # node advertises no nvidia.com/gpu, and a pod requesting it stays Pending.
-  # No template requests nvidia.com/gpu: containers reach the GPUs through
-  # NVIDIA_VISIBLE_DEVICES and the default nvidia runtime, with or without the
-  # plugin.
+  # Neither singlenode's vLLM nor the Octostar GPU apps request nvidia.com/gpu:
+  # containers reach the GPUs through NVIDIA_VISIBLE_DEVICES and the default
+  # nvidia runtime, with or without the plugin.
   - name: Install k8s-device-plugin helmchart
     kubernetes.core.helm:
       name: nvdp
@@ -342,54 +337,5 @@
       chart_version: 0.17.1
       create_namespace: true
       release_namespace: nvidia-device-plugin
-
-  - name: Create vllm namespace
-    kubernetes.core.k8s:
-      name: vllm
-      api_version: v1
-      kind: Namespace
-      state: present
-
-  - name: Validate vllm_model
-    ansible.builtin.assert:
-      that: vllm_model in vllm_models
-      fail_msg: "vllm_model must be one of {{ vllm_models | join(', ') }}"
-
-  # Non-selected models are removed (PVCs are kept, so switching back is fast).
-  - name: Remove retired vLLM deployments
-    kubernetes.core.k8s:
-      state: absent
-      api_version: apps/v1
-      kind: Deployment
-      namespace: vllm
-      name: "{{ item }}"
-      wait: true
-      wait_timeout: 300
-      delete_options:
-        propagationPolicy: Foreground
-    loop: "{{ (vllm_models | difference([vllm_model])) + ['qwen3', 'qwen35', 'phi35'] }}"
-
-  - name: Remove retired vLLM services
-    kubernetes.core.k8s:
-      state: absent
-      api_version: v1
-      kind: Service
-      namespace: vllm
-      name: "{{ item }}"
-    loop: "{{ (vllm_models | difference([vllm_model])) + ['qwen3', 'qwen35', 'phi35'] }}"
-
-  - name: Copy deployments files
-    ansible.builtin.template:
-      src: deployments/{{ item }}-deployment.yml.j2
-      dest: /root/{{ item }}-deployment.yml
-    loop:
-      - "{{ vllm_model }}"
-
-  - name: Apply k8s deployments
-    kubernetes.core.k8s:
-      state: present
-      src: /root/{{ item }}-deployment.yml
-    loop:
-      - "{{ vllm_model }}"
 
   # In case you mess things up with the operator, refer to this: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/uninstall.html
